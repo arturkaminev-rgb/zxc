@@ -545,33 +545,23 @@ end
 local function equipTool(substring)
     return smartEquipItem(substring)
 end
--- ── 5A · Worthiness unlock (Sequential Chain: Agility -> Vitality/Agility II -> Worthiness) ─
+-- ── 5A · Worthiness unlock (Strict Chain: Agility I -> Agility II -> Agility III -> Worthiness) ─
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
-    pcall(function() Library:Notify("Прокачка Достоинства (цепочка Character Tree)...", 3) end)
+    pcall(function() Library:Notify("Прокачка Достоинства (Agility I-III -> Worthiness)...", 3) end)
 
-    local isRib = Config.ItemType and Config.ItemType:lower():find("rib")
-
-    -- Последовательность узлов древа персонажа YBA:
-    -- 1) Базовый узел ветки: Agility I (Ловкость 1)
-    -- 2) Узлы перехода: Vitality I (Живучесть 1) -> Agility II (Ловкость 2)
-    -- 3) Узлы Достоинства: Worthiness I (Достоинство 1) -> Worthiness II (Достоинство 2)
+    -- Строго 3 уровня ловкости и Достоинство БЕЗ цифр:
+    -- 1. Agility I (Agility 1, Ловкость I, Ловкость 1)
+    -- 2. Agility II (Agility 2, Ловкость II, Ловкость 2)
+    -- 3. Agility III (Agility 3, Ловкость III, Ловкость 3)
+    -- 4. Worthiness (Достоинство) — СТРОГО БЕЗ ЦИФР
+    -- Полностью исключены Vitality, HP, Здоровье и любые цифры у Worthiness.
     local skillChain = {
-        -- 1) Базовый узел
         { "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" },
-        -- 2) Узлы перехода ветки персонажа
-        { "Vitality I", "Vitality 1", "Живучесть I", "Живучесть 1" },
         { "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" },
-        -- 3) Узлы Достоинства
-        { "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1" },
-        { "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2" },
+        { "Agility III", "Agility 3", "Ловкость III", "Ловкость 3" },
+        { "Worthiness", "Достоинство" },
     }
-
-    if isRib then
-        table.insert(skillChain, { "Worthiness III", "Worthiness 3", "Достоинство III", "Достоинство 3" })
-        table.insert(skillChain, { "Worthiness IV", "Worthiness 4", "Достоинство IV", "Достоинство 4" })
-        table.insert(skillChain, { "Worthiness V", "Worthiness 5", "Достоинство V", "Достоинство 5" })
-    end
 
     local re, rf = getGameRemote()
 
@@ -594,12 +584,12 @@ local function unlockWorthiness()
                 end)
             end
         end
-        -- Пауза 0.25 сек, чтобы сервер успевал зафиксировать родительский узел перед следующим
-        task.wait(0.25)
+        -- Интервал task.wait(0.3) между уровнями для надежной регистрации на сервере
+        task.wait(0.3)
     end
 
     State.Worthiness = "LEARNED"
-    task.wait(0.25)
+    task.wait(0.2)
 end
 
 -- ── 5B · Map Scavenger ────────────────────────────────────────────────────────
@@ -791,8 +781,31 @@ local function getGuiFullText(guiObj)
     return table.concat(parts, " ")
 end
 
+local function isEffectivelyVisible(guiObj)
+    if not guiObj or not guiObj:IsA("GuiObject") then return false end
+    if not guiObj.Visible then return false end
+    local sz = guiObj.AbsoluteSize
+    if sz.X <= 5 or sz.Y <= 5 then return false end
+
+    local current = guiObj.Parent
+    while current and current:IsA("GuiObject") do
+        if not current.Visible then return false end
+        current = current.Parent
+    end
+
+    local sg = guiObj:FindFirstAncestorOfClass("ScreenGui")
+    if not sg or not sg.Enabled then return false end
+
+    return true
+end
+
 local function isDialogueButtonAffirmative(v)
     if not v or not v:IsA("GuiObject") then return false end
+
+    -- Элемент и все его родительские фреймы должны быть реально видимы на экране
+    if not isEffectivelyVisible(v) then
+        return false
+    end
 
     -- Ignore Scythe / Obsidian / Library GUI
     local sg = v:FindFirstAncestorOfClass("ScreenGui")
@@ -839,24 +852,67 @@ local function isDialogueButtonAffirmative(v)
     return false
 end
 
-local function triggerDialogueButton(button)
-    if not button then return false end
-    local triggered = false
+-- ── Physical Mouse Click via VirtualInputManager on Dialogue Button ────────────
+local function clickDialogueButtonVIM(button)
+    if not button or not button:IsA("GuiObject") then return false end
+    local cx, cy, rawX, rawY = getGuiScreenCenter(button)
+    local clicked = false
+
+    local vim = game:GetService("VirtualInputManager")
+    if vim and cx > 0 and cy > 0 then
+        pcall(function()
+            vim:SendMouseMoveEvent(cx, cy, game)
+            task.wait(0.04)
+            vim:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
+            task.wait(0.04)
+            vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
+            clicked = true
+
+            -- Резервный клик по координатам без смещения TopBar (на случай вариаций движка)
+            if cy ~= rawY then
+                task.wait(0.02)
+                vim:SendMouseMoveEvent(rawX, rawY, game)
+                task.wait(0.02)
+                vim:SendMouseButtonEvent(rawX, rawY, 0, true, game, 0)
+                task.wait(0.04)
+                vim:SendMouseButtonEvent(rawX, rawY, 0, false, game, 0)
+            end
+        end)
+    end
+
+    -- VirtualUser fallback
+    pcall(function()
+        local vu = game:GetService("VirtualUser")
+        if vu and cx > 0 and cy > 0 then
+            vu:CaptureController()
+            vu:MouseMove(Vector2.new(cx, cy))
+            task.wait(0.02)
+            vu:Button1Down(Vector2.new(cx, cy))
+            task.wait(0.03)
+            vu:Button1Up(Vector2.new(cx, cy))
+            clicked = true
+        end
+    end)
+
+    -- firesignal fallback
     if firesignal then
+        pcall(function() firesignal(button.MouseButton1Down) end)
         pcall(function() firesignal(button.MouseButton1Click) end)
         pcall(function() firesignal(button.Activated) end)
-        pcall(function() firesignal(button.MouseButton1Down) end)
         pcall(function() firesignal(button.MouseButton1Up) end)
-        triggered = true
     end
+
     pcall(function()
         if button.FireMouseButton1Click then
             button:FireMouseButton1Click()
-            triggered = true
         end
     end)
-    return triggered
+
+    return clicked
 end
+
+-- Backward compatibility alias
+local triggerDialogueButton = clickDialogueButtonVIM
 
 local function findDialogueOption()
     -- 1. Look inside known YBA dialogue containers in PlayerGui
@@ -872,7 +928,7 @@ local function findDialogueOption()
     for _, container in ipairs(knownContainers) do
         if container then
             for _, v in ipairs(container:GetDescendants()) do
-                if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+                if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and isEffectivelyVisible(v) then
                     local nameLow = v.Name:lower():gsub("[%p%s]+", "")
                     if nameLow == "option1" or nameLow == "choice1" or nameLow == "button1" or nameLow == "btn1" then
                         return v
@@ -891,9 +947,9 @@ local function findDialogueOption()
             local sgLow = sg.Name:lower()
             if not sgLow:find("obsidian") and not sgLow:find("library") and not sgLow:find("scythe") then
                 for _, v in ipairs(sg:GetDescendants()) do
-                    if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+                    if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and isEffectivelyVisible(v) then
                         local nameLow = v.Name:lower():gsub("[%p%s]+", "")
-                        if nameLow == "option1" or nameLow == "choice1" or nameLow == "button1" then
+                        if nameLow == "option1" or nameLow == "choice1" or nameLow == "button1" or nameLow == "btn1" then
                             return v
                         end
                         if isDialogueButtonAffirmative(v) then
@@ -907,7 +963,7 @@ local function findDialogueOption()
 
     -- 3. Fallback search across all PlayerGui
     for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and isEffectivelyVisible(v) then
             local sz = v.AbsoluteSize
             if sz.X > 15 and sz.Y > 10 and isDialogueButtonAffirmative(v) then
                 return v
@@ -949,17 +1005,18 @@ local function fireDialogueRemotes(toolName)
     end
 end
 
--- ── Hybrid Dialogue Confirmation (firesignal + RemoteEvent) ───────────────────
+-- ── Dialogue Confirmation (Physical VIM Mouse Click + RemoteEvent) ────────────
 local function confirmDialogue(toolName)
     local optBtn = findDialogueOption()
+    local clicked = false
     if optBtn then
-        triggerDialogueButton(optBtn)
+        clicked = clickDialogueButtonVIM(optBtn)
     end
     fireDialogueRemotes(toolName)
-    return optBtn ~= nil
+    return clicked or (optBtn ~= nil)
 end
 
--- ── Headless Item Usage (Equip -> Activate -> Confirm Loop with 2-3s Timeout) ──
+-- ── Headless Item Usage (Equip -> Activate -> VIM Mouse Click Confirmation Loop) ──
 local function useItemHeadless(itemName)
     local char = LocalPlayer.Character
     if not char then return false end
@@ -983,13 +1040,14 @@ local function useItemHeadless(itemName)
         pcall(function() inHand:Activate() end)
     end
 
-    -- 3. Цикл ожидания ответа и подтверждения диалога (таймаут 2.5 - 3.0 сек)
+    -- 3. Цикл ожидания ответа и подтверждения диалога кликом мыши (таймаут 3.5 - 4.0 сек)
     local initialChar = char
     local startTime = tick()
     local lastActivate = tick()
+    local dialogueSeen = false
 
-    while tick() - startTime < 3.0 do
-        -- Проверка начала сброса: смерть / респавн персонажа
+    while tick() - startTime < 4.0 do
+        -- Проверка начала сброса: смерть / респавн персонажа (Rokakaka)
         local curChar = LocalPlayer.Character
         local curHum = curChar and curChar:FindFirstChildOfClass("Humanoid")
         if curChar ~= initialChar or not curHum or curHum.Health <= 0 then
@@ -1002,22 +1060,35 @@ local function useItemHeadless(itemName)
             return true
         end
 
-        -- а) GUI-триггер: поиск активного окна диалога и программный вызов firesignal
+        -- а) GUI-триггер: поиск активного окна диалога
         local optBtn = findDialogueOption()
         if optBtn then
-            triggerDialogueButton(optBtn)
+            dialogueSeen = true
+            -- б) Физический клик мыши через VirtualInputManager по кнопке подтверждения («Да» / «Option1»)
+            clickDialogueButtonVIM(optBtn)
+
+            -- в) Сетевой вызов для дублирования: отправка RemoteEvent EndDialogue
+            fireDialogueRemotes(curTool and curTool.Name or itemName)
+
+            task.wait(0.1)
+        else
+            -- Если диалог уже открывался, мы по нему кликнули, и окно диалога закрылось:
+            if dialogueSeen then
+                task.wait(0.2)
+                local endTool = curChar:FindFirstChildOfClass("Tool")
+                if not endTool or not itemMatches(endTool.Name, itemName) then
+                    return true
+                end
+            end
+
+            -- Если диалог еще не появился через 0.4 сек, активируем тул повторно
+            if tick() - lastActivate > 0.4 and curTool then
+                pcall(function() curTool:Activate() end)
+                lastActivate = tick()
+            end
+
+            task.wait(0.08)
         end
-
-        -- б) Сетевой вызов: отправка RemoteEvent EndDialogue ("Item", "Rokakaka", "Mysterious Arrow")
-        fireDialogueRemotes(curTool and curTool.Name or itemName)
-
-        -- Если предмет все еще в руках и диалог не сработал через 0.4 сек, активируем повторно
-        if tick() - lastActivate > 0.4 and curTool then
-            pcall(function() curTool:Activate() end)
-            lastActivate = tick()
-        end
-
-        task.wait(0.1)
     end
 
     -- Финальная проверка: исчез ли предмет из рук
