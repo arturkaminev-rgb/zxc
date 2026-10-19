@@ -481,13 +481,22 @@ local function findMenuButton()
     return nil
 end
 
--- ── Smart Item Equipper (Hotbar, Backpack, or Background Inventory) ───────────
+-- ── Game Remote Access Helper ────────────────────────────────────────────────
+local function getGameRemote()
+    local char = LocalPlayer.Character
+    local re = (char and char:FindFirstChild("RemoteEvent"))
+        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
+    local rf = (char and char:FindFirstChild("RemoteFunction"))
+        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
+    return re, rf
+end
+
+-- ── Smart Item Equipper (Headless Backpack -> Character) ───────────────────────
 local function smartEquipItem(itemName)
     local char = LocalPlayer.Character
     if not char then return nil end
     local hum = char:FindFirstChildOfClass("Humanoid")
-    local bp = LocalPlayer:FindFirstChild("Backpack")
-    local vim = game:GetService("VirtualInputManager")
+    if not hum or hum.Health <= 0 then return nil end
 
     -- 1. Check if tool is ALREADY in hand
     local inHand = char:FindFirstChildOfClass("Tool")
@@ -495,123 +504,32 @@ local function smartEquipItem(itemName)
         return inHand
     end
 
-    -- 2. Direct parent to Character (Universal Roblox tool equip from Backpack)
+    -- 2. Direct equip from LocalPlayer.Backpack via Humanoid:EquipTool() (Headless)
+    local bp = LocalPlayer:FindFirstChild("Backpack")
     if bp then
         for _, tool in ipairs(bp:GetChildren()) do
             if tool:IsA("Tool") and itemMatches(tool.Name, itemName) and not tool.Name:lower():find("использован") and not tool.Name:lower():find("used") then
                 pcall(function()
-                    if hum then
-                        hum:EquipTool(tool)
-                    else
-                        tool.Parent = char
+                    hum:EquipTool(tool)
+                end)
+                for _ = 1, 10 do
+                    task.wait(0.05)
+                    local eq = char:FindFirstChildOfClass("Tool")
+                    if eq and itemMatches(eq.Name, itemName) then
+                        return eq
                     end
-                end)
-                task.wait(0.2)
+                end
+                -- Fallback parenting if EquipTool was delayed
+                if tool.Parent == bp then
+                    pcall(function() tool.Parent = char end)
+                    task.wait(0.1)
+                end
                 local eq = char:FindFirstChildOfClass("Tool")
-                if eq and itemMatches(eq.Name, itemName) then return eq end
-            end
-        end
-    end
-
-    -- 3. Press Hotbar Keys directly (Slot 4, 5 for Rokakaka; Slot 7, 8, 9, 0 for Arrow)
-    local isRoka = itemMatches("Rokakaka", itemName) or itemName:lower():find("roka") or itemName:lower():find("рока")
-    local numKeys = {
-        [1] = Enum.KeyCode.One,   [2] = Enum.KeyCode.Two,   [3] = Enum.KeyCode.Three,
-        [4] = Enum.KeyCode.Four,  [5] = Enum.KeyCode.Five,  [6] = Enum.KeyCode.Six,
-        [7] = Enum.KeyCode.Seven, [8] = Enum.KeyCode.Eight, [9] = Enum.KeyCode.Nine,
-        [0] = Enum.KeyCode.Zero,
-    }
-
-    local targetSlots = isRoka and { 4, 5, 1, 2, 3, 6 } or { 7, 8, 9, 0, 1, 2, 3 }
-    if vim then
-        for _, s in ipairs(targetSlots) do
-            local kc = numKeys[s]
-            if kc then
-                pcall(function()
-                    vim:SendKeyEvent(true, kc, false, game)
-                    task.wait(0.04)
-                    vim:SendKeyEvent(false, kc, false, game)
-                end)
-                task.wait(0.18)
-                local eq = char:FindFirstChildOfClass("Tool")
-                if eq and itemMatches(eq.Name, itemName) and not eq.Name:lower():find("использован") and not eq.Name:lower():find("used") then
+                if eq and itemMatches(eq.Name, itemName) then
                     return eq
                 end
             end
         end
-    end
-
-    -- 4. Check Hotbar buttons in CoreGui / PlayerGui HUD
-    pcall(function()
-        local coreGui = game:GetService("CoreGui")
-        local robloxGui = coreGui:FindFirstChild("RobloxGui")
-        local bpGui = robloxGui and robloxGui:FindFirstChild("Backpack")
-        local roots = { bpGui, PlayerGui:FindFirstChild("HUD"), PlayerGui }
-        for _, root in ipairs(roots) do
-            if root then
-                for _, v in ipairs(root:GetDescendants()) do
-                    if v:IsA("GuiButton") and v.Visible then
-                        local sg = v:FindFirstAncestorOfClass("ScreenGui")
-                        local sgName = sg and sg.Name:lower() or ""
-                        if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
-                            local txt = v.Text or ""
-                            local name = v.Name or ""
-                            local childMatch = false
-                            for _, lbl in ipairs(v:GetDescendants()) do
-                                if lbl:IsA("TextLabel") and itemMatches(lbl.Text, itemName) and not lbl.Text:lower():find("использован") and not lbl.Text:lower():find("used") then
-                                    childMatch = true
-                                    break
-                                end
-                            end
-
-                            if (itemMatches(txt, itemName) or itemMatches(name, itemName) or childMatch)
-                               and not txt:lower():find("использован") and not name:lower():find("использован") then
-                                clickWithCursor(v)
-                                task.wait(0.2)
-                                local eq = char:FindFirstChildOfClass("Tool")
-                                if eq and itemMatches(eq.Name, itemName) then
-                                    return eq
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end)
-
-    -- 5. Check Inventory Menu
-    local menuBtn = findMenuButton()
-    if menuBtn then
-        clickWithCursor(menuBtn)
-        task.wait(0.15)
-
-        local invBtn = findDescendantContaining(PlayerGui, "Inventory")
-            or findDescendantContaining(PlayerGui, "Инвентарь")
-        if invBtn and invBtn:IsA("GuiButton") then
-            clickWithCursor(invBtn)
-            task.wait(0.15)
-
-            for _, btn in ipairs(PlayerGui:GetDescendants()) do
-                if btn:IsA("GuiButton") and btn.Visible then
-                    if (itemMatches(btn.Text, itemName) or itemMatches(btn.Name, itemName))
-                       and not (btn.Text or ""):lower():find("использован") then
-                        clickWithCursor(btn)
-                        task.wait(0.2)
-                        break
-                    end
-                end
-            end
-        end
-
-        local closeBtn = findDescendantContaining(PlayerGui, "Close")
-            or findDescendantContaining(PlayerGui, "Закрыть")
-        if closeBtn and closeBtn:IsA("GuiButton") then
-            clickWithCursor(closeBtn)
-        else
-            clickWithCursor(menuBtn)
-        end
-        task.wait(0.15)
     end
 
     -- Final verify
@@ -623,224 +541,56 @@ local function smartEquipItem(itemName)
     return nil
 end
 
+
 local function equipTool(substring)
     return smartEquipItem(substring)
 end
-
-local function findCharacterMenuButton()
-    local searchTerms = { "character", "персонаж", "stats", "stat", "skills", "навыки", "player" }
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local sg = v:FindFirstAncestorOfClass("ScreenGui")
-            local sgName = sg and sg.Name:lower() or ""
-            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
-                local n = toLowerUtf8(v.Name)
-                local t = toLowerUtf8(v.Text or "")
-                for _, term in ipairs(searchTerms) do
-                    if n:find(term, 1, true) or t:find(term, 1, true) then
-                        return v
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local function getSkillTreeNodes()
-    local cam = workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-    local nodes = {}
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if (v:IsA("GuiButton") or v:IsA("ImageButton") or v:IsA("TextButton")) and v.Visible then
-            local sg = v:FindFirstAncestorOfClass("ScreenGui")
-            local sgName = sg and sg.Name:lower() or ""
-            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
-                local p = v.Parent and v.Parent.Name:lower() or ""
-                if not p:find("leaderboard") and not p:find("chat") and not p:find("hotbar") and not p:find("playerlist") then
-                    local sz = v.AbsoluteSize
-                    local pos = v.AbsolutePosition
-                    -- Hexagon skill tree nodes
-                    if sz.X >= 20 and sz.X <= 140 and sz.Y >= 20 and sz.Y <= 140 then
-                        if pos.Y > vp.Y * 0.08 and pos.Y < vp.Y * 0.92 and pos.X > vp.X * 0.02 and pos.X < vp.X * 0.70 then
-                            local txt = toLowerUtf8(v:IsA("TextButton") and v.Text or "")
-                            if txt ~= "back" and txt ~= "назад" and txt ~= "menu" and txt ~= "меню" and txt ~= "close" and txt ~= "закрыть" then
-                                table.insert(nodes, v)
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    -- Sort nodes by Y descending (from bottom-most / starting node upwards to Worthiness II)
-    table.sort(nodes, function(a, b)
-        return a.AbsolutePosition.Y > b.AbsolutePosition.Y
-    end)
-    return nodes
-end
-
--- ── Skill Tree Open / Close in Background Mode ────────────────────────────────
-local function openSkillTree()
-    local backBtn = findDescendantContaining(PlayerGui, "BACK")
-        or findDescendantContaining(PlayerGui, "Назад")
-    if backBtn and backBtn:IsA("GuiButton") and backBtn.Visible then
-        return true
-    end
-
-    -- 1. Click Menu button with CURSOR
-    local menuBtn = findMenuButton()
-    if menuBtn then
-        clickWithCursor(menuBtn)
-        task.wait(0.25)
-    end
-
-    -- 2. Click Character / Персонаж button in Menu
-    local charBtn = findCharacterMenuButton()
-    if charBtn then
-        clickWithCursor(charBtn)
-        task.wait(0.3)
-    end
-
-    -- 3. Click Skill Tree / Навыки if present
-    local skillBtn = findDescendantContaining(PlayerGui, "Skill Tree")
-        or findDescendantContaining(PlayerGui, "Навыки")
-        or findDescendantContaining(PlayerGui, "Tree")
-    if skillBtn and skillBtn:IsA("GuiButton") and skillBtn.Visible then
-        clickWithCursor(skillBtn)
-        task.wait(0.25)
-    end
-
-    -- 4. Verify BACK button appeared
-    for _ = 1, 10 do
-        backBtn = findDescendantContaining(PlayerGui, "BACK")
-            or findDescendantContaining(PlayerGui, "Назад")
-        if backBtn and backBtn:IsA("GuiButton") and backBtn.Visible then
-            return true
-        end
-        task.wait(0.08)
-    end
-    return false
-end
-
-local function closeSkillTree()
-    local backBtn = findDescendantContaining(PlayerGui, "BACK")
-        or findDescendantContaining(PlayerGui, "Назад")
-    if backBtn and backBtn:IsA("GuiButton") and backBtn.Visible then
-        clickWithCursor(backBtn)
-        task.wait(0.2)
-    end
-
-    local closeBtn = findDescendantContaining(PlayerGui, "Close")
-        or findDescendantContaining(PlayerGui, "Закрыть")
-        or findDescendantContaining(PlayerGui, "Exit")
-    if closeBtn and closeBtn:IsA("GuiButton") and closeBtn.Visible then
-        clickWithCursor(closeBtn)
-        task.wait(0.15)
-    else
-        local menuBtn = findMenuButton()
-        if menuBtn then
-            clickWithCursor(menuBtn)
-            task.wait(0.15)
-        end
-    end
-end
-
-local function learnSkillNode(node)
-    if not node then return false end
-    -- First click: select node
-    clickWithCursor(node)
-    task.wait(0.18)
-
-    -- Second click: confirm learn (YBA "Нажмите еще раз, чтобы узнать" mechanic)
-    clickWithCursor(node)
-    task.wait(0.18)
-
-    -- Also check if a card button or learn button appeared
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local t = toLowerUtf8(v.Text or "")
-            local n = toLowerUtf8(v.Name or "")
-            if t == "learn" or t == "выучить" or t == "купить" or t:find("нажмите еще раз")
-               or n == "learn" or n == "buy" then
-                clickWithCursor(v)
-                task.wait(0.15)
-                break
-            end
-        end
-    end
-    return true
-end
-
--- ── 5A · Worthiness unlock (Skill Tree Navigation + Remotes) ──────────────────
+-- ── 5A · Worthiness unlock (Headless Remote Invocation) ─────────────────────────
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
-    pcall(function() Library:Notify("Прокачка Достоинства (Worthiness II)...", 3) end)
+    pcall(function() Library:Notify("Прокачка Достоинства (Worthiness) в фоне...", 3) end)
 
-    -- 1. In-game Skill Tree Navigation & Learning
-    local ok = openSkillTree()
-    if ok then
-        task.wait(0.25)
-        local nodes = getSkillTreeNodes()
-        if #nodes > 0 then
-            -- Learn up to 3 nodes from bottom upwards (Root/Agility, Worthiness I, Worthiness II)
-            local countToLearn = math.min(#nodes, 3)
-            for i = 1, countToLearn do
-                learnSkillNode(nodes[i])
-                task.wait(0.15)
+    local isRib = Config.ItemType and Config.ItemType:lower():find("rib")
+
+    -- Sequence: Agility -> Worthiness I -> Worthiness II (and up to V for Rib Cage)
+    local skillSequence = {
+        { "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" },
+        { "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1" },
+        { "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2" },
+    }
+
+    if isRib then
+        table.insert(skillSequence, { "Worthiness III", "Worthiness 3", "Достоинство III", "Достоинство 3" })
+        table.insert(skillSequence, { "Worthiness IV", "Worthiness 4", "Достоинство IV", "Достоинство 4" })
+        table.insert(skillSequence, { "Worthiness V", "Worthiness 5", "Достоинство V", "Достоинство 5" })
+    end
+
+    local re, rf = getGameRemote()
+
+    for _, tier in ipairs(skillSequence) do
+        for _, skillName in ipairs(tier) do
+            if rf then
+                pcall(function()
+                    rf:InvokeServer("LearnSkill", {
+                        ["Skill"] = skillName,
+                        ["SkillTreeType"] = "Character",
+                    })
+                end)
             end
-            -- Check if any node is purple or explicitly Worthiness
-            for _, n in ipairs(nodes) do
-                if hasPurpleAppearance(n) or hasWorthinessName(n) then
-                    learnSkillNode(n)
-                    task.wait(0.15)
-                end
+            if re then
+                pcall(function()
+                    re:FireServer("LearnSkill", {
+                        ["Skill"] = skillName,
+                        ["SkillTreeType"] = "Character",
+                    })
+                end)
             end
         end
-        task.wait(0.2)
-        closeSkillTree()
         task.wait(0.2)
     end
 
-    -- 2. Direct remote invocation fallback
-    pcall(function()
-        local char = LocalPlayer.Character
-        local rf = (char and char:FindFirstChild("RemoteFunction"))
-            or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
-        local re = (char and char:FindFirstChild("RemoteEvent"))
-            or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
-
-        local skillsToLearn = {
-            "Agility I", "Agility 1", "Ловкость I", "Ловкость 1",
-            "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1",
-            "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2",
-        }
-
-        if rf or re then
-            for _, skillName in ipairs(skillsToLearn) do
-                if rf then
-                    pcall(function()
-                        rf:InvokeServer("LearnSkill", {
-                            ["Skill"] = skillName,
-                            ["SkillTreeType"] = "Character",
-                        })
-                    end)
-                end
-                if re then
-                    pcall(function()
-                        re:FireServer("LearnSkill", {
-                            ["Skill"] = skillName,
-                            ["SkillTreeType"] = "Character",
-                        })
-                    end)
-                end
-                task.wait(0.04)
-            end
-        end
-    end)
-
     State.Worthiness = "LEARNED"
-    task.wait(0.25)
+    task.wait(0.2)
 end
 
 -- ── 5B · Map Scavenger ────────────────────────────────────────────────────────
@@ -1141,76 +891,74 @@ local function findDialogueOption()
     return nil
 end
 
+-- ── Headless Dialogue Confirmation via RemoteEvent ───────────────────────────
 local function confirmDialogue(toolName)
-    local startTime = tick()
-    while tick() - startTime < 4.5 do
-        local optBtn = findDialogueOption()
-        if optBtn then
-            -- Click option with cursor and firesignal
-            clickWithCursor(optBtn)
+    local re = getGameRemote()
+    if not re then return false end
 
-            -- Remote fallback
-            pcall(function()
-                local char = LocalPlayer.Character
-                local re = char and char:FindFirstChild("RemoteEvent")
-                if re then
-                    local npcs = { "Item", "Rokakaka", "Mysterious Arrow" }
-                    if toolName then table.insert(npcs, 1, toolName) end
-                    for _, npcName in ipairs(npcs) do
-                        re:FireServer("EndDialogue", {
-                            ["NPC"] = npcName,
-                            ["Option"] = "Option1",
-                            ["Dialogue"] = "Dialogue1"
-                        })
-                    end
-                end
-            end)
-
-            task.wait(0.35)
-
-            -- Check if dialogue has closed
-            local stillThere = findDialogueOption()
-            if not stillThere then
-                return true
-            else
-                clickWithCursor(stillThere)
-                task.wait(0.35)
-                if not findDialogueOption() then
-                    return true
-                end
-            end
+    local npcs = { "Item" }
+    if toolName then
+        table.insert(npcs, toolName)
+        local low = tostring(toolName):lower()
+        if low:find("roka") then
+            table.insert(npcs, "Rokakaka")
+        elseif low:find("arrow") then
+            table.insert(npcs, "Mysterious Arrow")
+        elseif low:find("rib") then
+            table.insert(npcs, "Rib Cage of the Saint's Corpse")
         end
-        task.wait(0.12)
     end
-    return not findDialogueOption()
+
+    for _, npcName in ipairs(npcs) do
+        pcall(function()
+            re:FireServer("EndDialogue", {
+                ["NPC"] = npcName,
+                ["Option"] = "Option1",
+                ["Dialogue"] = "Dialogue1",
+            })
+        end)
+    end
+
+    -- Fast firesignal trigger on affirmative button if present (headless UI dismiss)
+    if firesignal then
+        pcall(function()
+            local optBtn = findDialogueOption()
+            if optBtn then
+                firesignal(optBtn.Activated)
+            end
+        end)
+    end
+
+    return true
 end
 
--- ── Use Item with Cursor (Equip -> Click Screen -> Confirm Dialogue) ──────────
-local function useItemWithCursor(itemName)
+-- ── Headless Item Usage (Equip -> Activate -> Confirm Dialogue) ───────────────
+local function useItemHeadless(itemName)
     local tool = smartEquipItem(itemName)
-    task.wait(0.35)
+    if not tool then
+        return false
+    end
+    task.wait(0.2)
 
     local char = LocalPlayer.Character
     local inHand = tool or (char and char:FindFirstChildOfClass("Tool"))
     if inHand then
-        pcall(function() inHand:Activate() end)
+        pcall(function()
+            inHand:Activate()
+        end)
     end
 
-    -- Click screen with mouse cursor to trigger item dialogue
-    clickScreenWithCursor()
-    task.wait(0.4)
+    task.wait(0.25)
+    confirmDialogue(inHand and inHand.Name or itemName)
+    task.wait(0.25)
+    confirmDialogue(inHand and inHand.Name or itemName)
 
-    -- Confirm dialogue prompt with cursor click
-    local ok = confirmDialogue(inHand and inHand.Name or itemName)
-    if not ok then
-        -- Retry screen click once if dialogue hasn't opened yet
-        if inHand then pcall(function() inHand:Activate() end) end
-        clickScreenWithCursor()
-        task.wait(0.4)
-        ok = confirmDialogue(inHand and inHand.Name or itemName)
-    end
-    return ok
+    return true
 end
+
+-- Backward compatibility alias
+local useItemWithCursor = useItemHeadless
+
 
 -- ── 5E · Stand Detection ──────────────────────────────────────────────────────
 local function detectCurrentStand()
@@ -1362,7 +1110,7 @@ local function showStandBanner(standName, targetStand, isTarget)
     end)
 end
 
--- ── 5F · Reroll Loop ─────────────────────────────────────────────────────────
+-- ── 5F · Reroll Loop (Headless Auto-Roll) ────────────────────────────────────
 local function runLoop()
     while State.Running do
         waitAlive()
@@ -1397,52 +1145,48 @@ local function runLoop()
             end
         end
 
-        -- ── STEP 1 · EAT ROKAKAKA WITH CURSOR ───────────────────────────────
-        -- "как только я включаю функцию что бы он брал рокаку в руки использывал ее"
-        State.CurrentPhase = "RESETTING"
-        pcall(function()
-            Library:Notify("Использование Рокакаки (сброс)...", 3)
-        end)
+        -- 2. Reset stand with Rokakaka (Headless)
+        local hasStand = (currentStand ~= "None" and currentStand ~= "Standless" and currentStand ~= "")
+        local toolInHand = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+        local holdingRoka = toolInHand and itemMatches(toolInHand.Name, "Rokakaka")
 
-        local initialChar = LocalPlayer.Character
-        local eaten = false
-        local rokaTries = 0
+        if hasStand or holdingRoka then
+            State.CurrentPhase = "RESETTING"
+            pcall(function()
+                Library:Notify("Использование Рокакаки (сброс)...", 3)
+            end)
 
-        while State.Running and not eaten and rokaTries < 4 do
-            rokaTries = rokaTries + 1
-            local ok = useItemWithCursor("Rokakaka")
+            local initialChar = LocalPlayer.Character
+            local eaten = false
+            local rokaTries = 0
 
-            -- Wait and check if character respawned, died, or Rokakaka was consumed
-            local t0 = tick()
-            while tick() - t0 < 3.5 do
-                local c = LocalPlayer.Character
-                local h = c and c:FindFirstChildOfClass("Humanoid")
-                if c ~= initialChar or not h or h.Health <= 0 then
-                    eaten = true
-                    break
-                end
-                if ok and not findDialogueOption() then
-                    local inH = c and c:FindFirstChildOfClass("Tool")
-                    if not inH or not itemMatches(inH.Name, "Rokakaka") then
-                        eaten = true
-                        break
+            while State.Running and not eaten and rokaTries < 4 do
+                rokaTries = rokaTries + 1
+                local ok = useItemHeadless("Rokakaka")
+                if ok then
+                    local t0 = tick()
+                    while tick() - t0 < 3.5 do
+                        local c = LocalPlayer.Character
+                        local h = c and c:FindFirstChildOfClass("Humanoid")
+                        if c ~= initialChar or not h or h.Health <= 0 then
+                            eaten = true
+                            break
+                        end
+                        task.wait(0.2)
                     end
                 end
-                task.wait(0.2)
+                if eaten then break end
+                task.wait(0.4)
             end
 
-            if eaten then break end
-            task.wait(0.4)
+            -- Ensure character is fully alive and respawned after Rokakaka
+            waitAlive()
+            task.wait(0.8)
         end
-
-        -- Ensure character is fully alive and respawned after Rokakaka
-        waitAlive()
-        task.wait(0.8)
 
         if not State.Running then break end
 
-        -- ── STEP 2 · BACKGROUND WORTHINESS UPGRADE (NO MENU OPENING) ────────
-        -- "после чего прокачивал достойность не открывая меню в фоновом режиме"
+        -- 3. Background Worthiness Upgrade (Headless, no GUI)
         State.CurrentPhase = "UNLOCKING_WORTHINESS"
         pcall(unlockWorthiness)
         task.wait(0.3)
@@ -1450,18 +1194,17 @@ local function runLoop()
 
         if not State.Running then break end
 
-        -- ── STEP 3 · USE ROLLING ITEM WITH CURSOR ───────────────────────────
-        -- "брал стрелу или то что выбрано в rolling item и использывал ее курсором"
+        -- 4. Use Rolling Item Headless (Arrow / Rib)
         State.CurrentPhase = "ROLLING"
         pcall(function()
-            Library:Notify("Использование " .. Config.ItemType .. "...", 3)
+            Library:Notify("Использование " .. tostring(Config.ItemType) .. "...", 3)
         end)
 
         local arrowUsed = false
         local arrowTries = 0
         while State.Running and not arrowUsed and arrowTries < 3 do
             arrowTries = arrowTries + 1
-            local itemOk = useItemWithCursor(Config.ItemType)
+            local itemOk = useItemHeadless(Config.ItemType)
             if itemOk then
                 arrowUsed = true
                 break
@@ -1470,13 +1213,13 @@ local function runLoop()
             end
         end
 
-        task.wait(3.0)
+        -- Wait for stand animation and spawn
+        task.wait(3.5)
         waitAlive()
 
         if not State.Running then break end
 
-        -- ── STEP 4 · STAND DETECTION & TARGET CHECK ─────────────────────────
-        -- "и так пока не выбьет определенный стенд который выбран в target stand"
+        -- 5. Stand Detection & Target Check
         State.CurrentPhase = "DETECTING_STAND"
         local detectStart = tick()
         local newStand    = "None"
@@ -1488,7 +1231,7 @@ local function runLoop()
         State.ActiveStand = newStand
         local isTarget = newStand ~= "None" and newStand ~= "Standless" and (newStand:lower():find(Config.TargetStand:lower(), 1, true) ~= nil)
 
-        -- Write on screen which stand dropped!
+        -- Write on screen which stand dropped
         showStandBanner(newStand, Config.TargetStand, isTarget)
 
         if isTarget then
@@ -1496,16 +1239,15 @@ local function runLoop()
             State.Running      = false
 
             pcall(function()
-                Library:Notify("Все есть! Выбит целевой стенд: " .. newStand, 10)
+                Library:Notify("Целевой стенд успешно получен: " .. newStand, 10)
             end)
             pcall(function()
                 game:GetService("StarterGui"):SetCore("SendNotification", {
                     Title    = "Scythe | YBA",
-                    Text     = "Все есть! Выбит целевой стенд: " .. newStand,
+                    Text     = "Целевой стенд успешно получен: " .. newStand,
                     Duration = 10,
                 })
             end)
-
             pcall(function()
                 if Toggles and Toggles.AutoRollToggle then
                     Toggles.AutoRollToggle:SetValue(false)
@@ -1518,7 +1260,7 @@ local function runLoop()
             end)
         end
 
-        task.wait(Config.LoopDelay)
+        task.wait(Config.LoopDelay or 0.5)
     end
 
     State.CurrentPhase = "IDLE"
