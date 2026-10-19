@@ -545,100 +545,79 @@ end
 local function equipTool(substring)
     return smartEquipItem(substring)
 end
--- ── 5A · Worthiness unlock (Agility I-III -> Pause 0.5s -> Worthiness Retry Loop) ─
+-- ── 5A · Worthiness unlock (Agility I-III -> Worthiness with Fresh Character & Remotes) ─
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
     pcall(function() Library:Notify("Прокачка Достоинства (Agility I-III -> Worthiness)...", 3) end)
 
-    local re, rf = getGameRemote()
+    local success, err = pcall(function()
+        -- 1. Дожидаемся полной загрузки живого персонажа после респавна/Рокакаки
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not char or not hum or hum.Health <= 0 then
+            char = LocalPlayer.CharacterAdded:Wait()
+        end
+        hum = char:WaitForChild("Humanoid", 5)
+        local hrp = char:WaitForChild("HumanoidRootPart", 5)
+        task.wait(0.7) -- дать серверу время полностью инициализировать структуру персонажа
 
-    -- 1. Последовательная прокачка 3 уровней скорости (Agility I, II, III)
-    local agilityChain = {
-        { "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" },
-        { "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" },
-        { "Agility III", "Agility 3", "Ловкость III", "Ловкость 3" },
-    }
+        -- 2. Динамический поиск свежего ремоута персонажа или ReplicatedStorage
+        local rf = char:FindFirstChild("RemoteFunction")
+            or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
+        local re = char:FindFirstChild("RemoteEvent")
+            or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
 
-    for i, aliases in ipairs(agilityChain) do
-        local curRe, curRf = getGameRemote()
-        local activeRe = curRe or re
-        local activeRf = curRf or rf
-
-        for _, skillName in ipairs(aliases) do
-            if activeRf then
-                pcall(function()
-                    activeRf:InvokeServer("LearnSkill", {
-                        ["Skill"] = skillName,
-                        ["SkillTreeType"] = "Character",
-                    })
-                end)
-            end
-            if activeRe then
-                pcall(function()
-                    activeRe:FireServer("LearnSkill", {
-                        ["Skill"] = skillName,
-                        ["SkillTreeType"] = "Character",
-                    })
-                end)
-            end
+        if not rf and not re then
+            print("[Scythe YBA] ОШИБКА: Remotes (RemoteFunction/RemoteEvent) не найдены для прокачки навыков!")
+            pcall(function() Library:Notify("Ошибка: ремоуты прокачки не найдены!", 4) end)
+            return false
+        else
+            print("[Scythe YBA] Remotes успешно найдены. Начинаем прокачку древа навыков...")
         end
 
-        -- Пауза 0.3 сек между 1-м и 2-м уровнями скорости
-        if i < 3 then
-            task.wait(0.3)
+        -- 3. Функция безопасного вызова навыка с перебором алиасов
+        local function learnNode(skillNames)
+            for _, name in ipairs(skillNames) do
+                pcall(function()
+                    if rf then
+                        rf:InvokeServer("LearnSkill", {
+                            ["Skill"] = name,
+                            ["SkillTreeType"] = "Character"
+                        })
+                    end
+                    if re then
+                        re:FireServer("LearnSkill", {
+                            ["Skill"] = name,
+                            ["SkillTreeType"] = "Character"
+                        })
+                    end
+                end)
+            end
+            task.wait(0.35) -- обязательная пауза, чтобы сервер зарегистрировал открытый узел!
         end
+
+        -- Последовательная прокачка строго 3 скоростей и Достоинства:
+        learnNode({ "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" })
+        learnNode({ "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" })
+        learnNode({ "Agility III", "Agility 3", "Ловкость III", "Ловкость 3" })
+
+        task.wait(0.3) -- пауза перед Достоинством для фиксации сервером 3-й скорости
+
+        -- Для Достоинства перебираем варианты:
+        learnNode({ "Worthiness", "Достоинство", "Worthiness I", "Worthiness 1", "Worthiness1", "Character_Worthiness" })
+        task.wait(0.2)
+        -- Повторное подтверждение на случай сетевой задержки ответа сервера
+        learnNode({ "Worthiness", "Достоинство", "Worthiness I", "Worthiness 1" })
+
+        State.Worthiness = "LEARNED"
+        print("[Scythe YBA] Прокачка Достоинства успешно завершена.")
+        return true
+    end)
+
+    if not success then
+        print("[Scythe YBA] Ошибка внутри unlockWorthiness: " .. tostring(err))
     end
 
-    -- 1. ПАУЗА ПОСЛЕ 3-Й СКОРОСТИ:
-    -- Серверу игры требуется время, чтобы зафиксировать регистрацию покупки Agility III
-    task.wait(0.5)
-
-    -- 2. ПЕРЕБОР ВСЕХ ВОЗМОЖНЫХ ИДЕНТИФИКАТОРОВ ДОСТОИНСТВА:
-    local worthinessVariants = {
-        "Worthiness",
-        "Worthiness I",
-        "Worthiness 1",
-        "Worthiness1",
-        "Достоинство",
-        "Достоинство I",
-        "Достоинство 1",
-        "Character_Worthiness",
-        "CharacterWorthiness",
-    }
-
-    -- 3. ПОВТОРНАЯ ПОПЫТКА (RETRY LOOP: 3 попытки с интервалом 0.4 сек):
-    for attempt = 1, 3 do
-        local curRe, curRf = getGameRemote()
-        local activeRe = curRe or re
-        local activeRf = curRf or rf
-
-        for _, variant in ipairs(worthinessVariants) do
-            if activeRf then
-                pcall(function()
-                    activeRf:InvokeServer("LearnSkill", {
-                        ["Skill"] = variant,
-                        ["SkillTreeType"] = "Character",
-                    })
-                end)
-            end
-            if activeRe then
-                pcall(function()
-                    activeRe:FireServer("LearnSkill", {
-                        ["Skill"] = variant,
-                        ["SkillTreeType"] = "Character",
-                    })
-                end)
-            end
-            -- Задержка task.wait(0.15) между вариантами с защитой pcall
-            task.wait(0.15)
-        end
-
-        if attempt < 3 then
-            task.wait(0.4)
-        end
-    end
-
-    State.Worthiness = "LEARNED"
     task.wait(0.2)
 end
 
