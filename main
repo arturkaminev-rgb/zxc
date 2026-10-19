@@ -545,30 +545,38 @@ end
 local function equipTool(substring)
     return smartEquipItem(substring)
 end
--- ── 5A · Worthiness unlock (Headless Remote Invocation) ─────────────────────────
+-- ── 5A · Worthiness unlock (Sequential Chain: Agility -> Vitality/Agility II -> Worthiness) ─
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
-    pcall(function() Library:Notify("Прокачка Достоинства (Worthiness) в фоне...", 3) end)
+    pcall(function() Library:Notify("Прокачка Достоинства (цепочка Character Tree)...", 3) end)
 
     local isRib = Config.ItemType and Config.ItemType:lower():find("rib")
 
-    -- Sequence: Agility -> Worthiness I -> Worthiness II (and up to V for Rib Cage)
-    local skillSequence = {
+    -- Последовательность узлов древа персонажа YBA:
+    -- 1) Базовый узел ветки: Agility I (Ловкость 1)
+    -- 2) Узлы перехода: Vitality I (Живучесть 1) -> Agility II (Ловкость 2)
+    -- 3) Узлы Достоинства: Worthiness I (Достоинство 1) -> Worthiness II (Достоинство 2)
+    local skillChain = {
+        -- 1) Базовый узел
         { "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" },
+        -- 2) Узлы перехода ветки персонажа
+        { "Vitality I", "Vitality 1", "Живучесть I", "Живучесть 1" },
+        { "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" },
+        -- 3) Узлы Достоинства
         { "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1" },
         { "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2" },
     }
 
     if isRib then
-        table.insert(skillSequence, { "Worthiness III", "Worthiness 3", "Достоинство III", "Достоинство 3" })
-        table.insert(skillSequence, { "Worthiness IV", "Worthiness 4", "Достоинство IV", "Достоинство 4" })
-        table.insert(skillSequence, { "Worthiness V", "Worthiness 5", "Достоинство V", "Достоинство 5" })
+        table.insert(skillChain, { "Worthiness III", "Worthiness 3", "Достоинство III", "Достоинство 3" })
+        table.insert(skillChain, { "Worthiness IV", "Worthiness 4", "Достоинство IV", "Достоинство 4" })
+        table.insert(skillChain, { "Worthiness V", "Worthiness 5", "Достоинство V", "Достоинство 5" })
     end
 
     local re, rf = getGameRemote()
 
-    for _, tier in ipairs(skillSequence) do
-        for _, skillName in ipairs(tier) do
+    for _, aliases in ipairs(skillChain) do
+        for _, skillName in ipairs(aliases) do
             if rf then
                 pcall(function()
                     rf:InvokeServer("LearnSkill", {
@@ -586,11 +594,12 @@ local function unlockWorthiness()
                 end)
             end
         end
-        task.wait(0.2)
+        -- Пауза 0.25 сек, чтобы сервер успевал зафиксировать родительский узел перед следующим
+        task.wait(0.25)
     end
 
     State.Worthiness = "LEARNED"
-    task.wait(0.2)
+    task.wait(0.25)
 end
 
 -- ── 5B · Map Scavenger ────────────────────────────────────────────────────────
@@ -830,45 +839,65 @@ local function isDialogueButtonAffirmative(v)
     return false
 end
 
+local function triggerDialogueButton(button)
+    if not button then return false end
+    local triggered = false
+    if firesignal then
+        pcall(function() firesignal(button.MouseButton1Click) end)
+        pcall(function() firesignal(button.Activated) end)
+        pcall(function() firesignal(button.MouseButton1Down) end)
+        pcall(function() firesignal(button.MouseButton1Up) end)
+        triggered = true
+    end
+    pcall(function()
+        if button.FireMouseButton1Click then
+            button:FireMouseButton1Click()
+            triggered = true
+        end
+    end)
+    return triggered
+end
+
 local function findDialogueOption()
-    -- Priority 1: Look inside explicit dialogue / talk / NPC / prompt containers
+    -- 1. Look inside known YBA dialogue containers in PlayerGui
+    local knownContainers = {
+        PlayerGui:FindFirstChild("Dialogue"),
+        PlayerGui:FindFirstChild("DialogueGui"),
+        PlayerGui:FindFirstChild("Prompt"),
+        PlayerGui:FindFirstChild("ItemDialogue"),
+        PlayerGui:FindFirstChild("Talk"),
+        PlayerGui:FindFirstChild("HUD"),
+    }
+
+    for _, container in ipairs(knownContainers) do
+        if container then
+            for _, v in ipairs(container:GetDescendants()) do
+                if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+                    local nameLow = v.Name:lower():gsub("[%p%s]+", "")
+                    if nameLow == "option1" or nameLow == "choice1" or nameLow == "button1" or nameLow == "btn1" then
+                        return v
+                    end
+                    if isDialogueButtonAffirmative(v) then
+                        return v
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. General search across all ScreenGuis in PlayerGui
     for _, sg in ipairs(PlayerGui:GetChildren()) do
         if sg:IsA("ScreenGui") and sg.Enabled then
             local sgLow = sg.Name:lower()
             if not sgLow:find("obsidian") and not sgLow:find("library") and not sgLow:find("scythe") then
-                local isDiagGui = sgLow:find("dialog") or sgLow:find("talk") or sgLow:find("npc") or sgLow:find("prompt") or sgLow:find("choice")
-
-                local containers = {}
-                if isDiagGui then
-                    table.insert(containers, sg)
-                else
-                    for _, ch in ipairs(sg:GetChildren()) do
-                        local chLow = ch.Name:lower()
-                        if chLow:find("dialog") or chLow:find("talk") or chLow:find("npc") or chLow:find("prompt") or chLow:find("choice") then
-                            table.insert(containers, ch)
+                for _, v in ipairs(sg:GetDescendants()) do
+                    if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+                        local nameLow = v.Name:lower():gsub("[%p%s]+", "")
+                        if nameLow == "option1" or nameLow == "choice1" or nameLow == "button1" then
+                            return v
                         end
-                    end
-                end
-
-                for _, container in ipairs(containers) do
-                    for _, v in ipairs(container:GetDescendants()) do
-                        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
-                            if isDialogueButtonAffirmative(v) then
-                                return v
-                            end
-                        end
-                    end
-
-                    for _, f in ipairs(container:GetDescendants()) do
-                        local fn = f.Name:lower()
-                        if fn == "options" or fn == "choices" or fn == "buttons" then
-                            for _, btn in ipairs(f:GetChildren()) do
-                                if (btn:IsA("GuiButton") or btn:IsA("TextButton") or btn:IsA("ImageButton")) and btn.Visible then
-                                    if not isNegativeDialogueWord(getGuiFullText(btn)) then
-                                        return btn
-                                    end
-                                end
-                            end
+                        if isDialogueButtonAffirmative(v) then
+                            return v
                         end
                     end
                 end
@@ -876,14 +905,12 @@ local function findDialogueOption()
         end
     end
 
-    -- Priority 2: Global search across all PlayerGui for affirmative buttons
+    -- 3. Fallback search across all PlayerGui
     for _, v in ipairs(PlayerGui:GetDescendants()) do
         if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
             local sz = v.AbsoluteSize
-            if sz.X > 15 and sz.Y > 10 then
-                if isDialogueButtonAffirmative(v) then
-                    return v
-                end
+            if sz.X > 15 and sz.Y > 10 and isDialogueButtonAffirmative(v) then
+                return v
             end
         end
     end
@@ -891,21 +918,23 @@ local function findDialogueOption()
     return nil
 end
 
--- ── Headless Dialogue Confirmation via RemoteEvent ───────────────────────────
-local function confirmDialogue(toolName)
+local function fireDialogueRemotes(toolName)
     local re = getGameRemote()
-    if not re then return false end
+    if not re then return end
 
-    local npcs = { "Item" }
+    local npcs = { "Item", "Rokakaka", "Mysterious Arrow" }
     if toolName then
-        table.insert(npcs, toolName)
+        table.insert(npcs, 1, toolName)
         local low = tostring(toolName):lower()
         if low:find("roka") then
-            table.insert(npcs, "Rokakaka")
+            table.insert(npcs, 2, "Rokakaka")
+            table.insert(npcs, "Pure Rokakaka")
         elseif low:find("arrow") then
-            table.insert(npcs, "Mysterious Arrow")
+            table.insert(npcs, 2, "Mysterious Arrow")
+            table.insert(npcs, "Lucky Arrow")
         elseif low:find("rib") then
-            table.insert(npcs, "Rib Cage of the Saint's Corpse")
+            table.insert(npcs, 2, "Rib Cage of the Saint's Corpse")
+            table.insert(npcs, "Rib Cage")
         end
     end
 
@@ -918,42 +947,87 @@ local function confirmDialogue(toolName)
             })
         end)
     end
-
-    -- Fast firesignal trigger on affirmative button if present (headless UI dismiss)
-    if firesignal then
-        pcall(function()
-            local optBtn = findDialogueOption()
-            if optBtn then
-                firesignal(optBtn.Activated)
-            end
-        end)
-    end
-
-    return true
 end
 
--- ── Headless Item Usage (Equip -> Activate -> Confirm Dialogue) ───────────────
+-- ── Hybrid Dialogue Confirmation (firesignal + RemoteEvent) ───────────────────
+local function confirmDialogue(toolName)
+    local optBtn = findDialogueOption()
+    if optBtn then
+        triggerDialogueButton(optBtn)
+    end
+    fireDialogueRemotes(toolName)
+    return optBtn ~= nil
+end
+
+-- ── Headless Item Usage (Equip -> Activate -> Confirm Loop with 2-3s Timeout) ──
 local function useItemHeadless(itemName)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+
+    -- 1. Экипировать предмет в руки напрямую из Backpack
     local tool = smartEquipItem(itemName)
     if not tool then
         return false
     end
-    task.wait(0.2)
+    task.wait(0.15)
 
-    local char = LocalPlayer.Character
-    local inHand = tool or (char and char:FindFirstChildOfClass("Tool"))
-    if inHand then
-        pcall(function()
-            inHand:Activate()
-        end)
+    local inHand = char:FindFirstChildOfClass("Tool")
+    if not inHand or not itemMatches(inHand.Name, itemName) then
+        inHand = tool
     end
 
-    task.wait(0.25)
-    confirmDialogue(inHand and inHand.Name or itemName)
-    task.wait(0.25)
-    confirmDialogue(inHand and inHand.Name or itemName)
+    -- 2. Первичная активация предмета
+    if inHand then
+        pcall(function() inHand:Activate() end)
+    end
 
-    return true
+    -- 3. Цикл ожидания ответа и подтверждения диалога (таймаут 2.5 - 3.0 сек)
+    local initialChar = char
+    local startTime = tick()
+    local lastActivate = tick()
+
+    while tick() - startTime < 3.0 do
+        -- Проверка начала сброса: смерть / респавн персонажа
+        local curChar = LocalPlayer.Character
+        local curHum = curChar and curChar:FindFirstChildOfClass("Humanoid")
+        if curChar ~= initialChar or not curHum or curHum.Health <= 0 then
+            return true
+        end
+
+        -- Проверка исчезновения предмета из руки (предмет был успешно съеден / использован)
+        local curTool = curChar:FindFirstChildOfClass("Tool")
+        if not curTool or not itemMatches(curTool.Name, itemName) then
+            return true
+        end
+
+        -- а) GUI-триггер: поиск активного окна диалога и программный вызов firesignal
+        local optBtn = findDialogueOption()
+        if optBtn then
+            triggerDialogueButton(optBtn)
+        end
+
+        -- б) Сетевой вызов: отправка RemoteEvent EndDialogue ("Item", "Rokakaka", "Mysterious Arrow")
+        fireDialogueRemotes(curTool and curTool.Name or itemName)
+
+        -- Если предмет все еще в руках и диалог не сработал через 0.4 сек, активируем повторно
+        if tick() - lastActivate > 0.4 and curTool then
+            pcall(function() curTool:Activate() end)
+            lastActivate = tick()
+        end
+
+        task.wait(0.1)
+    end
+
+    -- Финальная проверка: исчез ли предмет из рук
+    local endChar = LocalPlayer.Character
+    local endTool = endChar and endChar:FindFirstChildOfClass("Tool")
+    if not endTool or not itemMatches(endTool.Name, itemName) then
+        return true
+    end
+
+    return false
 end
 
 -- Backward compatibility alias
@@ -1156,12 +1230,12 @@ local function runLoop()
                 Library:Notify("Использование Рокакаки (сброс)...", 3)
             end)
 
-            local initialChar = LocalPlayer.Character
             local eaten = false
             local rokaTries = 0
 
             while State.Running and not eaten and rokaTries < 4 do
                 rokaTries = rokaTries + 1
+                local initialChar = LocalPlayer.Character
                 local ok = useItemHeadless("Rokakaka")
                 if ok then
                     local t0 = tick()
@@ -1169,6 +1243,11 @@ local function runLoop()
                         local c = LocalPlayer.Character
                         local h = c and c:FindFirstChildOfClass("Humanoid")
                         if c ~= initialChar or not h or h.Health <= 0 then
+                            eaten = true
+                            break
+                        end
+                        local curS = detectCurrentStand()
+                        if curS == "None" or curS == "Standless" or curS == "" then
                             eaten = true
                             break
                         end
