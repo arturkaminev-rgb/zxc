@@ -653,105 +653,46 @@ local function learnSkillNode(node)
     return false
 end
 
--- ── 5A · Worthiness unlock (Background Mode) ──────────────────────────────────
+-- ── 5A · Worthiness unlock (100% Background Mode — No Menu Opening!) ─────────
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
+    pcall(function() Library:Notify("Фоновая прокачка Достоинства (без открытия меню)...", 2) end)
 
-    local opened = openSkillTree()
-    if not opened then
-        task.wait(0.2)
-        openSkillTree()
-    end
-    task.wait(0.2)
+    local char = LocalPlayer.Character
+    local rf = (char and char:FindFirstChild("RemoteFunction"))
+        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
+    local re = (char and char:FindFirstChild("RemoteEvent"))
+        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
 
-    -- Collect all potential skill node buttons
-    local allButtons = {}
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("GuiButton") then
-            local txt = (v.Text or ""):lower()
-            local name = v.Name:lower()
-            if txt ~= "back" and txt ~= "назад" and txt ~= "close" and txt ~= "закрыть"
-               and not txt:find("очки навыков") and not txt:find("skill point")
-               and not name:find("menu") and not name:find("close") and not name:find("back") then
-                local s = v.AbsoluteSize
-                if s.X >= 25 and s.X <= 160 and s.Y >= 25 and s.Y <= 160 then
-                    local aspect = s.X / math.max(s.Y, 1)
-                    if aspect >= 0.7 and aspect <= 1.4 then
-                        table.insert(allButtons, v)
-                    end
-                end
+    local skillsToLearn = {
+        "Agility I", "Agility 1",
+        "Worthiness I", "Worthiness 1",
+        "Worthiness II", "Worthiness 2",
+    }
+
+    if rf or re then
+        for _, skillName in ipairs(skillsToLearn) do
+            if rf then
+                pcall(function()
+                    rf:InvokeServer("LearnSkill", {
+                        ["Skill"] = skillName,
+                        ["SkillTreeType"] = "Character",
+                    })
+                end)
             end
-        end
-    end
-
-    -- Find the Worthiness node
-    -- 1. By purple appearance ("до фиолетового кружочка")
-    -- 2. By name / text ("достойность-worthiness")
-    local worthinessNode = nil
-    for _, btn in ipairs(allButtons) do
-        if hasPurpleAppearance(btn) or hasWorthinessName(btn) then
-            worthinessNode = btn
-            break
-        end
-    end
-
-    -- Fallback: click buttons with cursor and check card title
-    if not worthinessNode then
-        for _, btn in ipairs(allButtons) do
-            clickWithCursor(btn)
+            if re then
+                pcall(function()
+                    re:FireServer("LearnSkill", {
+                        ["Skill"] = skillName,
+                        ["SkillTreeType"] = "Character",
+                    })
+                end)
+            end
             task.wait(0.08)
-            for _, lbl in ipairs(PlayerGui:GetDescendants()) do
-                if lbl:IsA("TextLabel") and lbl.Visible and isWorthinessText(lbl.Text) then
-                    worthinessNode = btn
-                    break
-                end
-            end
-            if worthinessNode then break end
         end
     end
 
-    if worthinessNode then
-        -- Find prerequisite nodes leading to it in the same vertical column
-        local prereqs = {}
-        local wx = worthinessNode.AbsolutePosition.X
-        local wy = worthinessNode.AbsolutePosition.Y
-
-        for _, btn in ipairs(allButtons) do
-            if btn ~= worthinessNode then
-                local bx = btn.AbsolutePosition.X
-                local by = btn.AbsolutePosition.Y
-                if math.abs(bx - wx) <= 35 and by > wy then
-                    table.insert(prereqs, btn)
-                end
-            end
-        end
-
-        -- Sort prerequisites from bottom (largest Y) to top (smaller Y)
-        table.sort(prereqs, function(a, b)
-            return a.AbsolutePosition.Y > b.AbsolutePosition.Y
-        end)
-
-        -- Unlock prerequisite nodes in order
-        for _, preNode in ipairs(prereqs) do
-            learnSkillNode(preNode)
-            task.wait(0.12)
-        end
-
-        -- Unlock the purple Worthiness node
-        learnSkillNode(worthinessNode)
-        task.wait(0.15)
-        State.Worthiness = "LEARNED"
-    else
-        local worthFallback = findDescendantContaining(PlayerGui, "Worthiness")
-            or findDescendantContaining(PlayerGui, "Достоинство")
-        if worthFallback then
-            learnSkillNode(worthFallback)
-            State.Worthiness = "LEARNED"
-        end
-    end
-
-    -- Close skill tree and return to game
-    closeSkillTree()
+    State.Worthiness = "LEARNED"
     task.wait(0.2)
 end
 
@@ -883,35 +824,98 @@ local function buyFromShop(needItem, needRoka)
     State.RokaCount = countInBackpack("Rokakaka")
 end
 
--- ── 5D · Dialogue Confirmer with Cursor ───────────────────────────────────────
-local function confirmDialogue()
-    local startTime = tick()
-    while tick() - startTime < 3.5 do
-        for _, v in ipairs(PlayerGui:GetDescendants()) do
-            if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
-                local fullText = (v:IsA("TextButton") and v.Text or ""):lower()
-                for _, child in ipairs(v:GetDescendants()) do
-                    if child:IsA("TextLabel") then
-                        fullText = fullText .. " " .. child.Text:lower()
+-- ── 5D · Dialogue Helper & Confirmer ─────────────────────────────────────────
+local function isAffirmativeDialogueWord(str)
+    if not str or type(str) ~= "string" then return false end
+    local s = str:lower()
+    local clean = s:gsub("[%p%s]+", "")
+    if clean == "yes" or clean == "да" or clean == "eat" or clean == "съесть"
+       or clean == "use" or clean == "использовать" or clean == "применить"
+       or clean == "confirm" or clean == "подтвердить" or clean == "покушать" then
+        return true
+    end
+    for w in s:gmatch("[%a\128-\255]+") do
+        if w == "yes" or w == "да" or w == "eat" or w == "съесть"
+           or w == "use" or w == "использовать" or w == "применить"
+           or w == "confirm" or w == "подтвердить" or w == "покушать" then
+            return true
+        end
+    end
+    return false
+end
+
+local function findDialogueOption()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local pName = v.Parent and v.Parent.Name:lower() or ""
+                if not pName:find("player") and not pName:find("list") and not pName:find("quest") and not pName:find("stat") then
+                    local name = v.Name:lower()
+                    local btnText = (v:IsA("TextButton") and v.Text or "")
+                    local childText = ""
+                    for _, child in ipairs(v:GetDescendants()) do
+                        if child:IsA("TextLabel") and child.Visible then
+                            childText = childText .. " " .. child.Text
+                        end
+                    end
+
+                    local isOpt1 = name == "option1" or name == "choice1" or name == "option_1" or name == "choice_1" or name == "yes" or name == "eat" or name == "use"
+                    local isAff = isAffirmativeDialogueWord(btnText) or isAffirmativeDialogueWord(childText)
+
+                    if isOpt1 or isAff then
+                        local pos = v.AbsolutePosition
+                        if pos.Y > vp.Y * 0.35 and pos.Y < vp.Y * 0.98 and pos.X > vp.X * 0.1 and pos.X < vp.X * 0.9 then
+                            return v
+                        end
                     end
                 end
-                fullText = fullText:gsub("%s+", "")
-                local name = v.Name:lower():gsub("%s+", "")
+            end
+        end
+    end
+    return nil
+end
 
-                if fullText == "yes" or fullText == "да"
-                   or fullText:find("yes") or fullText:find("да")
-                   or fullText:find("eat") or fullText:find("съесть") or fullText:find("покушать")
-                   or fullText:find("use") or fullText:find("использ") or fullText:find("применить")
-                   or fullText:find("confirm") or fullText:find("подтверд")
-                   or name == "option1" or name == "choice1" or name == "yes" or name == "choice"
-                   or name:find("confirm") then
-                    clickWithCursor(v)
-                    task.wait(0.25)
+local function confirmDialogue()
+    local startTime = tick()
+    while tick() - startTime < 4.0 do
+        local optBtn = findDialogueOption()
+        if optBtn then
+            -- Click option with cursor and firesignal
+            clickWithCursor(optBtn)
+
+            -- Remote fallback
+            pcall(function()
+                local char = LocalPlayer.Character
+                local re = char and char:FindFirstChild("RemoteEvent")
+                if re then
+                    re:FireServer("EndDialogue", {
+                        ["NPC"] = "Item",
+                        ["Option"] = "Option1",
+                        ["Dialogue"] = "Dialogue1"
+                    })
+                end
+            end)
+
+            task.wait(0.35)
+
+            -- Verify if dialogue has closed
+            local stillThere = findDialogueOption()
+            if not stillThere then
+                return true
+            else
+                clickWithCursor(stillThere)
+                task.wait(0.35)
+                if not findDialogueOption() then
                     return true
                 end
             end
         end
-        task.wait(0.08)
+        task.wait(0.12)
     end
     return false
 end
@@ -919,7 +923,7 @@ end
 -- ── Use Item with Cursor (Equip -> Click Screen -> Confirm Dialogue) ──────────
 local function useItemWithCursor(itemName)
     local tool = smartEquipItem(itemName)
-    task.wait(0.2)
+    task.wait(0.3)
 
     local char = LocalPlayer.Character
     local inHand = tool or (char and char:FindFirstChildOfClass("Tool"))
@@ -929,14 +933,15 @@ local function useItemWithCursor(itemName)
 
     -- Click screen with mouse cursor to trigger item dialogue
     clickScreenWithCursor()
-    task.wait(0.3)
+    task.wait(0.4)
 
     -- Confirm dialogue prompt with cursor click
     local ok = confirmDialogue()
     if not ok then
         -- Retry screen click once if dialogue hasn't opened yet
+        if inHand then pcall(function() inHand:Activate() end) end
         clickScreenWithCursor()
-        task.wait(0.3)
+        task.wait(0.4)
         ok = confirmDialogue()
     end
     return ok
@@ -1047,37 +1052,27 @@ local function runLoop()
         end
 
         -- ── STEP 1 · EAT ROKAKAKA WITH CURSOR ───────────────────────────────
-        -- If player has an unwanted stand, eat Rokakaka to reset.
-        -- If player is Standless, attempt Rokakaka once but NEVER freeze or block!
-        if currentStand ~= "None" and currentStand ~= "Standless" and currentStand ~= "" then
-            State.CurrentPhase = "RESETTING"
-            pcall(function()
-                Library:Notify("Сброс стенда (" .. currentStand .. ") через Рокакаку...", 3)
-            end)
-            local rokaOk = useItemWithCursor("Rokakaka")
-            if rokaOk then
-                task.wait(2.5)
-                waitAlive()
-                task.wait(0.3)
-            else
-                task.wait(0.5)
-            end
+        -- "как только я включаю функцию что бы он брал рокаку в руки использывал ее"
+        State.CurrentPhase = "RESETTING"
+        pcall(function()
+            Library:Notify("Использование Рокакаки (сброс)...", 3)
+        end)
+        local rokaOk = useItemWithCursor("Rokakaka")
+        if rokaOk then
+            task.wait(2.5)
+            waitAlive()
+            task.wait(0.5)
         else
-            -- Player is Standless: try to use Rokakaka once just in case to reset skill tree, without blocking
-            State.CurrentPhase = "RESETTING"
-            pcall(function()
-                useItemWithCursor("Rokakaka")
-            end)
-            task.wait(0.3)
+            task.wait(0.5)
         end
 
         if not State.Running then break end
 
-        -- ── STEP 2 · BACKGROUND WORTHINESS UPGRADE ──────────────────────────
-        -- "делал фоновую прокачку ... что бы я не видел меню тд тп"
+        -- ── STEP 2 · BACKGROUND WORTHINESS UPGRADE (NO MENU OPENING) ────────
+        -- "после чего прокачивал достойность не открывая меню в фоновом режиме"
         State.CurrentPhase = "UNLOCKING_WORTHINESS"
         pcall(unlockWorthiness)
-        task.wait(0.3)
+        task.wait(0.2)
         waitAlive()
 
         if not State.Running then break end
@@ -1090,13 +1085,13 @@ local function runLoop()
         end)
         local itemOk = useItemWithCursor(Config.ItemType)
         if itemOk then
-            task.wait(2.5)
+            task.wait(3.0)
             waitAlive()
         else
             -- Retry once if dialogue did not confirm immediately
             task.wait(0.5)
             useItemWithCursor(Config.ItemType)
-            task.wait(2.0)
+            task.wait(2.5)
             waitAlive()
         end
 
