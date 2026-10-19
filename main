@@ -426,11 +426,133 @@ local function hasWorthinessName(guiObj)
     return false
 end
 
--- ── Background Mode: Fast & Clean Execution ─────────────────────────────────
-local function setMenuBackgroundMode(enabled)
-    -- Fast execution mode: frames remain on-screen with valid absolute coordinates
-    -- so VirtualInputManager and VirtualUser clicks register accurately.
+-- ── GUI Visibility & Safe Activation Engine (Ultrawide-Safe) ─────────────────
+local function isEffectivelyVisible(guiObj)
+    if not guiObj or not guiObj:IsA("GuiObject") then return false end
+    if not guiObj.Visible then return false end
+    local sz = guiObj.AbsoluteSize
+    if sz.X <= 5 or sz.Y <= 5 then return false end
+
+    local current = guiObj.Parent
+    while current and current:IsA("GuiObject") do
+        if not current.Visible then return false end
+        current = current.Parent
+    end
+
+    local sg = guiObj:FindFirstAncestorOfClass("ScreenGui")
+    if not sg or not sg.Enabled then return false end
+
+    return true
 end
+
+local function activateDialogueButton(targetButton)
+    if not targetButton or not targetButton:IsA("GuiObject") then return false end
+    local activated = false
+
+    -- 1. Системный фокус движка Roblox (GuiService.SelectedObject) + виртуальный ввод клавиши Return
+    pcall(function()
+        local guiService = game:GetService("GuiService")
+        local vim = game:GetService("VirtualInputManager")
+        if guiService then
+            guiService.SelectedObject = targetButton
+            task.wait(0.05)
+            if vim then
+                vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                task.wait(0.03)
+                vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            end
+            guiService.SelectedObject = nil
+            activated = true
+        end
+    end)
+
+    -- 2. Прямой программный вызов событий объекта кнопки через firesignal
+    if firesignal then
+        pcall(function() firesignal(targetButton.Activated) end)
+        pcall(function() firesignal(targetButton.MouseButton1Click) end)
+        pcall(function() firesignal(targetButton.MouseButton1Down) end)
+        pcall(function() firesignal(targetButton.MouseButton1Up) end)
+        activated = true
+    end
+
+    -- 3. Встроенный метод эксплоита FireMouseButton1Click (если поддерживается средой)
+    pcall(function()
+        if targetButton.FireMouseButton1Click then
+            targetButton:FireMouseButton1Click()
+            activated = true
+        end
+    end)
+
+    -- 4. Альтернативный расчет через нижнюю часть объекта со смещением вниз (Fallback VIM)
+    pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        if vim then
+            local pos = targetButton.AbsolutePosition
+            local size = targetButton.AbsoluteSize
+            local cx = pos.X + (size.X / 2)
+
+            -- Смещаем точку клика в нижнюю половину объекта для Ultrawide:
+            local cy = pos.Y + size.Y - 6
+            if (cy - (pos.Y + size.Y / 2)) < 15 then
+                cy = pos.Y + (size.Y / 2) + 16
+            end
+
+            local sg = targetButton:FindFirstAncestorOfClass("ScreenGui")
+            local guiService = game:GetService("GuiService")
+            if sg and not sg.IgnoreGuiInset and guiService then
+                local inset = guiService:GetGuiInset()
+                cy = cy + inset.Y
+                cx = cx + inset.X
+            end
+
+            if cx > 0 and cy > 0 then
+                vim:SendMouseMoveEvent(cx, cy, game)
+                task.wait(0.03)
+                vim:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
+                task.wait(0.03)
+                vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
+                activated = true
+            end
+        end
+    end)
+
+    -- 5. Дополнительный fallback через VirtualUser со смещением вниз
+    pcall(function()
+        local vu = game:GetService("VirtualUser")
+        if vu then
+            local pos = targetButton.AbsolutePosition
+            local size = targetButton.AbsoluteSize
+            local cx = pos.X + (size.X / 2)
+
+            local cy = pos.Y + size.Y - 6
+            if (cy - (pos.Y + size.Y / 2)) < 15 then
+                cy = pos.Y + (size.Y / 2) + 16
+            end
+
+            local sg = targetButton:FindFirstAncestorOfClass("ScreenGui")
+            local guiService = game:GetService("GuiService")
+            if sg and not sg.IgnoreGuiInset and guiService then
+                local inset = guiService:GetGuiInset()
+                cy = cy + inset.Y
+                cx = cx + inset.X
+            end
+
+            if cx > 0 and cy > 0 then
+                vu:CaptureController()
+                vu:MouseMove(Vector2.new(cx, cy))
+                vu:Button1Down(Vector2.new(cx, cy))
+                task.wait(0.02)
+                vu:Button1Up(Vector2.new(cx, cy))
+                activated = true
+            end
+        end
+    end)
+
+    return activated
+end
+
+local clickDialogueButtonVIM = activateDialogueButton
+local triggerDialogueButton = activateDialogueButton
 
 -- ── Locate Menu Button with Cursor ───────────────────────────────────────────
 local function findMenuButton()
@@ -446,13 +568,13 @@ local function findMenuButton()
     for _, root in ipairs(searchRoots) do
         if root then
             for _, v in ipairs(root:GetDescendants()) do
-                if v:IsA("GuiButton") and v.Visible then
+                if (v:IsA("GuiButton") or v:IsA("ImageButton") or v:IsA("TextButton")) and isEffectivelyVisible(v) then
                     local sg = v:FindFirstAncestorOfClass("ScreenGui")
                     local sgName = sg and sg.Name:lower() or ""
                     if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
                         local pos = v.AbsolutePosition
                         local sz = v.AbsoluteSize
-                        if pos.X > vp.X * 0.75 and pos.Y > vp.Y * 0.75 and sz.X >= 18 and sz.Y >= 18 and sz.X <= 180 and sz.Y <= 180 then
+                        if pos.X > vp.X * 0.70 and pos.Y > vp.Y * 0.70 and sz.X >= 18 and sz.Y >= 18 and sz.X <= 200 and sz.Y <= 200 then
                             local score = pos.X + pos.Y
                             if score > maxScore then
                                 maxScore = score
@@ -468,9 +590,9 @@ local function findMenuButton()
 
     -- 2. By name / text
     for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local n = v.Name:lower()
-            local t = (v.Text or ""):lower()
+        if (v:IsA("GuiButton") or v:IsA("ImageButton") or v:IsA("TextButton")) and isEffectivelyVisible(v) then
+            local n = toLowerUtf8(v.Name)
+            local t = toLowerUtf8(v:IsA("TextButton") and v.Text or "")
             if n == "menu" or t == "menu" or n == "меню" or t == "меню"
                or n:find("menubutton") or n:find("openmenu") or n:find("togglemenu") then
                 return v
@@ -479,6 +601,332 @@ local function findMenuButton()
     end
 
     return nil
+end
+
+-- ── 5A · Character Skill Tree Automation (GUI Diamond Ring + Network Fallback) ─
+local function isSkillTreeOpen()
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if v:IsA("GuiButton") and isEffectivelyVisible(v) then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local t = toLowerUtf8(v.Text or "")
+                local n = toLowerUtf8(v.Name)
+                if t == "back" or t == "назад" or n == "back" or n == "назад" then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function findCharacterOrSkillButton()
+    local searchTerms = {
+        "skill tree", "skilltree", "skills", "древо", "дерево", "навыки",
+        "character", "персонаж", "stats", "статистика", "player", "профиль"
+    }
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and isEffectivelyVisible(v) then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local n = toLowerUtf8(v.Name)
+                local t = toLowerUtf8(v:IsA("TextButton") and v.Text or "")
+                local full = n .. " " .. t
+                for _, child in ipairs(v:GetDescendants()) do
+                    if child:IsA("TextLabel") then
+                        full = full .. " " .. toLowerUtf8(child.Text)
+                    end
+                end
+                for _, term in ipairs(searchTerms) do
+                    if full:find(term, 1, true) then
+                        return v
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function openSkillTree()
+    if isSkillTreeOpen() then return true end
+
+    -- 1. Нажатие кнопки Menu в правом нижнем углу
+    local menuBtn = findMenuButton()
+    if menuBtn then
+        activateDialogueButton(menuBtn)
+        task.wait(0.35)
+    end
+
+    if isSkillTreeOpen() then return true end
+
+    -- 2. Поиск и нажатие кнопки Character / Персонаж / Навыки в открывшемся меню
+    local charBtn = findCharacterOrSkillButton()
+    if charBtn then
+        activateDialogueButton(charBtn)
+        task.wait(0.4)
+    end
+
+    if isSkillTreeOpen() then return true end
+
+    -- 3. Если требуется переключиться на вкладку Skill Tree внутри меню персонажа
+    local skillTab = findCharacterOrSkillButton()
+    if skillTab and skillTab ~= charBtn then
+        activateDialogueButton(skillTab)
+        task.wait(0.4)
+    end
+
+    -- 4. Ожидание появления окна Skill Tree (до 1.5 сек)
+    for _ = 1, 15 do
+        if isSkillTreeOpen() then return true end
+        task.wait(0.1)
+    end
+
+    return isSkillTreeOpen()
+end
+
+local function closeSkillTree()
+    local backBtn = nil
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if v:IsA("GuiButton") and isEffectivelyVisible(v) then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local t = toLowerUtf8(v.Text or "")
+                local n = toLowerUtf8(v.Name)
+                if t == "back" or t == "назад" or n == "back" or n == "назад" then
+                    backBtn = v
+                    break
+                end
+            end
+        end
+    end
+
+    if backBtn then
+        activateDialogueButton(backBtn)
+        task.wait(0.25)
+    end
+
+    local closeBtn = nil
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if v:IsA("GuiButton") and isEffectivelyVisible(v) then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local t = toLowerUtf8(v.Text or "")
+                local n = toLowerUtf8(v.Name)
+                if t == "close" or t == "закрыть" or t == "exit" or n == "close" or n == "exit" then
+                    closeBtn = v
+                    break
+                end
+            end
+        end
+    end
+    if closeBtn then
+        activateDialogueButton(closeBtn)
+        task.wait(0.15)
+    end
+end
+
+local function getSkillTreeCandidates()
+    local candidates = {}
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if (v:IsA("GuiButton") or v:IsA("ImageButton") or v:IsA("TextButton")) and isEffectivelyVisible(v) then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local p = v.Parent
+                local pName = p and p.Name:lower() or ""
+                if not pName:find("leaderboard") and not pName:find("chat") and not pName:find("hotbar") and not pName:find("playerlist") then
+                    local txt = toLowerUtf8(v:IsA("TextButton") and v.Text or "")
+                    local n = toLowerUtf8(v.Name)
+                    if txt ~= "back" and txt ~= "назад" and txt ~= "menu" and txt ~= "меню"
+                       and txt ~= "close" and txt ~= "закрыть" and txt ~= "exit" and txt ~= "reset"
+                       and n ~= "back" and n ~= "close" and n ~= "exit" and n ~= "menu" then
+                        local sz = v.AbsoluteSize
+                        if sz.X >= 18 and sz.X <= 140 and sz.Y >= 18 and sz.Y <= 140 then
+                            table.insert(candidates, v)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return candidates
+end
+
+local function getSkillTree5Nodes()
+    local candidates = getSkillTreeCandidates()
+    if #candidates == 0 then return {} end
+
+    -- Вариант 1: Поиск по текстовым меткам / названиям навыков
+    local namedBase = nil
+    local namedAgility = {}
+    local namedWorthiness = nil
+
+    for _, v in ipairs(candidates) do
+        local n = toLowerUtf8(v.Name)
+        local t = toLowerUtf8(v:IsA("TextButton") and v.Text or "")
+        local full = n .. " " .. t
+        for _, child in ipairs(v:GetDescendants()) do
+            if child:IsA("TextLabel") then
+                full = full .. " " .. toLowerUtf8(child.Text)
+            end
+        end
+
+        if full:find("worth") or full:find("достоин") then
+            namedWorthiness = v
+        elseif full:find("base") or full:find("root") or full:find("начало") then
+            namedBase = v
+        elseif full:find("agility") or full:find("ловкость") then
+            table.insert(namedAgility, v)
+        end
+    end
+
+    if #namedAgility >= 3 and namedWorthiness then
+        table.sort(namedAgility, function(a, b)
+            return (a.AbsolutePosition.Y + a.AbsoluteSize.Y / 2) > (b.AbsolutePosition.Y + b.AbsoluteSize.Y / 2)
+        end)
+        local order = {}
+        if namedBase then table.insert(order, namedBase) end
+        table.insert(order, namedAgility[1]) -- Agility I
+        table.insert(order, namedAgility[2]) -- Agility II
+        table.insert(order, namedAgility[3]) -- Agility III
+        table.insert(order, namedWorthiness) -- Worthiness
+        return order
+    end
+
+    -- Вариант 2: Пространственная геометрия ромба (media_1792382717601_851c27e3.jpg)
+    -- Находим нижний узел ромба (максимальная Y координата на экране)
+    local maxY = -math.huge
+    local bottomNode = nil
+    for _, v in ipairs(candidates) do
+        local cy = v.AbsolutePosition.Y + v.AbsoluteSize.Y / 2
+        if cy > maxY then
+            maxY = cy
+            bottomNode = v
+        end
+    end
+
+    if not bottomNode then return {} end
+
+    local midX = bottomNode.AbsolutePosition.X + bottomNode.AbsoluteSize.X / 2
+    local hexW = bottomNode.AbsoluteSize.X
+
+    local leftNodes = {}
+    local centerNodes = {}
+
+    for _, v in ipairs(candidates) do
+        local cx = v.AbsolutePosition.X + v.AbsoluteSize.X / 2
+        local dx = cx - midX
+        if dx < -hexW * 0.6 and dx >= -hexW * 2.3 then
+            table.insert(leftNodes, v)
+        elseif math.abs(dx) <= hexW * 0.7 then
+            table.insert(centerNodes, v)
+        end
+    end
+
+    -- Левая колонка (Ловкость): сортируем снизу вверх (Agility I -> Agility II -> Agility III)
+    table.sort(leftNodes, function(a, b)
+        return (a.AbsolutePosition.Y + a.AbsoluteSize.Y / 2) > (b.AbsolutePosition.Y + b.AbsoluteSize.Y / 2)
+    end)
+
+    -- Центральная колонка (Base снизу, Worthiness сверху)
+    table.sort(centerNodes, function(a, b)
+        return (a.AbsolutePosition.Y + a.AbsoluteSize.Y / 2) > (b.AbsolutePosition.Y + b.AbsoluteSize.Y / 2)
+    end)
+
+    local result = {}
+    -- 1. Корневой узел (низ ромба)
+    table.insert(result, bottomNode)
+
+    -- 2. Строго 3 узла Ловкости слева (Agility I, II, III)
+    local maxAgil = math.min(#leftNodes, 3)
+    for i = 1, maxAgil do
+        table.insert(result, leftNodes[i])
+    end
+
+    -- 3. Верхний центральный узел (Достоинство / Worthiness)
+    if #centerNodes >= 2 then
+        table.insert(result, centerNodes[#centerNodes])
+    elseif #centerNodes == 1 and centerNodes[1] ~= bottomNode then
+        table.insert(result, centerNodes[1])
+    end
+
+    return result
+end
+
+local function learnNodeGui(nodeObj, nodeIndex)
+    if not nodeObj or not nodeObj:IsA("GuiObject") then return false end
+
+    -- 1. Первое нажатие: выбор узла и открытие карточки / подсказки
+    activateDialogueButton(nodeObj)
+    task.wait(0.22)
+
+    -- 2. Второе нажатие: подтверждение прокачки (механика игры "PRESS AGAIN TO CONFIRM")
+    activateDialogueButton(nodeObj)
+    task.wait(0.2)
+
+    -- 3. Проверка появления отдельной кнопки подтверждения в тултипе/PlayerGui
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if v:IsA("GuiButton") and isEffectivelyVisible(v) then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local t = toLowerUtf8(v.Text or "")
+                local n = toLowerUtf8(v.Name)
+                if t:find("confirm") or t:find("learn") or t:find("upgrade") or t:find("buy")
+                   or t:find("подтверд") or t:find("узнать") or t:find("купить") or t:find("press again")
+                   or n:find("confirm") or n:find("learn") or n:find("buy") then
+                    activateDialogueButton(v)
+                    task.wait(0.15)
+                    break
+                end
+            end
+        end
+    end
+
+    -- 4. Сетевой дубляж ремоутов для конкретно этого узла
+    local char = LocalPlayer.Character
+    local rf = (char and char:FindFirstChild("RemoteFunction"))
+        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
+    local re = (char and char:FindFirstChild("RemoteEvent"))
+        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
+
+    local aliases = {}
+    if nodeIndex == 1 then
+        aliases = { "Base", "Character", "Agility I", "Agility 1", "Agility" }
+    elseif nodeIndex == 2 then
+        aliases = { "Agility I", "Agility 1", "Ловкость I", "Ловкость 1", "Agility" }
+    elseif nodeIndex == 3 then
+        aliases = { "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" }
+    elseif nodeIndex == 4 then
+        aliases = { "Agility III", "Agility 3", "Ловкость III", "Ловкость 3" }
+    elseif nodeIndex >= 5 then
+        aliases = { "Worthiness", "Достоинство", "Worthiness I", "Worthiness 1", "Worthiness1", "Character_Worthiness" }
+    end
+
+    if rf or re then
+        for _, name in ipairs(aliases) do
+            pcall(function()
+                if rf then
+                    rf:InvokeServer("LearnSkill", { ["Skill"] = name, ["SkillTreeType"] = "Character" })
+                    rf:InvokeServer("LearnSkill", name, "Character")
+                    rf:InvokeServer("LearnSkill", name)
+                end
+                if re then
+                    re:FireServer("LearnSkill", { ["Skill"] = name, ["SkillTreeType"] = "Character" })
+                    re:FireServer("LearnSkill", name, "Character")
+                    re:FireServer("LearnSkill", name)
+                end
+            end)
+        end
+    end
+
+    task.wait(0.35)
+    return true
 end
 
 -- ── Game Remote Access Helper ────────────────────────────────────────────────
@@ -541,11 +989,11 @@ local function smartEquipItem(itemName)
     return nil
 end
 
-
 local function equipTool(substring)
     return smartEquipItem(substring)
 end
--- ── 5A · Worthiness unlock (Agility I-III -> Worthiness with Fresh Character & Remotes) ─
+
+-- ── 5A · Worthiness unlock (GUI Diamond Ring + Network Remote Fallback) ──────
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
     pcall(function() Library:Notify("Прокачка Достоинства (Agility I-III -> Worthiness)...", 3) end)
@@ -559,55 +1007,59 @@ local function unlockWorthiness()
         end
         hum = char:WaitForChild("Humanoid", 5)
         local hrp = char:WaitForChild("HumanoidRootPart", 5)
-        task.wait(0.7) -- дать серверу время полностью инициализировать структуру персонажа
+        task.wait(0.7) -- дать серверу и PlayerGui время полностью загрузиться
 
-        -- 2. Динамический поиск свежего ремоута персонажа или ReplicatedStorage
-        local rf = char:FindFirstChild("RemoteFunction")
+        -- 2. Попытка интерактивной прокачки через игровое окно Skill Tree
+        local guiOpened = openSkillTree()
+        if guiOpened then
+            task.wait(0.3)
+            local nodes = getSkillTree5Nodes()
+            if #nodes > 0 then
+                for idx, nodeObj in ipairs(nodes) do
+                    learnNodeGui(nodeObj, idx)
+                    task.wait(0.15)
+                end
+            end
+            task.wait(0.25)
+            closeSkillTree()
+            task.wait(0.2)
+        end
+
+        -- 3. Сетевой дублирующий fallback через Remotes со всеми вариантами имён
+        local rf = (char and char:FindFirstChild("RemoteFunction"))
             or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
-        local re = char:FindFirstChild("RemoteEvent")
+        local re = (char and char:FindFirstChild("RemoteEvent"))
             or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
 
-        if not rf and not re then
-            print("[Scythe YBA] ОШИБКА: Remotes (RemoteFunction/RemoteEvent) не найдены для прокачки навыков!")
-            pcall(function() Library:Notify("Ошибка: ремоуты прокачки не найдены!", 4) end)
-            return false
-        else
-            print("[Scythe YBA] Remotes успешно найдены. Начинаем прокачку древа навыков...")
-        end
-
-        -- 3. Функция безопасного вызова навыка с перебором алиасов
-        local function learnNode(skillNames)
-            for _, name in ipairs(skillNames) do
-                pcall(function()
-                    if rf then
-                        rf:InvokeServer("LearnSkill", {
-                            ["Skill"] = name,
-                            ["SkillTreeType"] = "Character"
-                        })
-                    end
-                    if re then
-                        re:FireServer("LearnSkill", {
-                            ["Skill"] = name,
-                            ["SkillTreeType"] = "Character"
-                        })
-                    end
-                end)
+        if rf or re then
+            local function netLearn(names)
+                for _, name in ipairs(names) do
+                    pcall(function()
+                        if rf then
+                            rf:InvokeServer("LearnSkill", { ["Skill"] = name, ["SkillTreeType"] = "Character" })
+                            rf:InvokeServer("LearnSkill", name, "Character")
+                            rf:InvokeServer("LearnSkill", name)
+                        end
+                        if re then
+                            re:FireServer("LearnSkill", { ["Skill"] = name, ["SkillTreeType"] = "Character" })
+                            re:FireServer("LearnSkill", name, "Character")
+                            re:FireServer("LearnSkill", name)
+                        end
+                    end)
+                end
+                task.wait(0.3)
             end
-            task.wait(0.35) -- обязательная пауза, чтобы сервер зарегистрировал открытый узел!
+
+            -- Последовательная прокачка: корень -> 3 ловкости -> Достоинство
+            netLearn({ "Base", "Character", "Agility I", "Agility 1" })
+            netLearn({ "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" })
+            netLearn({ "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" })
+            netLearn({ "Agility III", "Agility 3", "Ловкость III", "Ловкость 3" })
+            task.wait(0.3)
+            netLearn({ "Worthiness", "Достоинство", "Worthiness I", "Worthiness 1", "Worthiness1", "Character_Worthiness" })
+            task.wait(0.2)
+            netLearn({ "Worthiness", "Достоинство" })
         end
-
-        -- Последовательная прокачка строго 3 скоростей и Достоинства:
-        learnNode({ "Agility I", "Agility 1", "Ловкость I", "Ловкость 1" })
-        learnNode({ "Agility II", "Agility 2", "Ловкость II", "Ловкость 2" })
-        learnNode({ "Agility III", "Agility 3", "Ловкость III", "Ловкость 3" })
-
-        task.wait(0.3) -- пауза перед Достоинством для фиксации сервером 3-й скорости
-
-        -- Для Достоинства перебираем варианты:
-        learnNode({ "Worthiness", "Достоинство", "Worthiness I", "Worthiness 1", "Worthiness1", "Character_Worthiness" })
-        task.wait(0.2)
-        -- Повторное подтверждение на случай сетевой задержки ответа сервера
-        learnNode({ "Worthiness", "Достоинство", "Worthiness I", "Worthiness 1" })
 
         State.Worthiness = "LEARNED"
         print("[Scythe YBA] Прокачка Достоинства успешно завершена.")
@@ -810,24 +1262,6 @@ local function getGuiFullText(guiObj)
     return table.concat(parts, " ")
 end
 
-local function isEffectivelyVisible(guiObj)
-    if not guiObj or not guiObj:IsA("GuiObject") then return false end
-    if not guiObj.Visible then return false end
-    local sz = guiObj.AbsoluteSize
-    if sz.X <= 5 or sz.Y <= 5 then return false end
-
-    local current = guiObj.Parent
-    while current and current:IsA("GuiObject") do
-        if not current.Visible then return false end
-        current = current.Parent
-    end
-
-    local sg = guiObj:FindFirstAncestorOfClass("ScreenGui")
-    if not sg or not sg.Enabled then return false end
-
-    return true
-end
-
 local function isDialogueButtonAffirmative(v)
     if not v or not v:IsA("GuiObject") then return false end
 
@@ -880,119 +1314,6 @@ local function isDialogueButtonAffirmative(v)
 
     return false
 end
-
--- ── 5D · Direct GUI Engine Dialogue Button Activation (Ultrawide-Safe) ────────
-local function activateDialogueButton(targetButton)
-    if not targetButton or not targetButton:IsA("GuiObject") then return false end
-    local activated = false
-
-    -- 1. Системный фокус движка Roblox (GuiService.SelectedObject) + виртуальный ввод клавиши Return
-    pcall(function()
-        local guiService = game:GetService("GuiService")
-        local vim = game:GetService("VirtualInputManager")
-        if guiService then
-            guiService.SelectedObject = targetButton
-            task.wait(0.05)
-            if vim then
-                vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-                task.wait(0.03)
-                vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-            end
-            guiService.SelectedObject = nil
-            activated = true
-        end
-    end)
-
-    -- 2. Прямой программный вызов событий объекта кнопки через firesignal
-    if firesignal then
-        pcall(function() firesignal(targetButton.Activated) end)
-        pcall(function() firesignal(targetButton.MouseButton1Click) end)
-        pcall(function() firesignal(targetButton.MouseButton1Down) end)
-        pcall(function() firesignal(targetButton.MouseButton1Up) end)
-        activated = true
-    end
-
-    -- 3. Встроенный метод эксплоита FireMouseButton1Click (если поддерживается средой)
-    pcall(function()
-        if targetButton.FireMouseButton1Click then
-            targetButton:FireMouseButton1Click()
-            activated = true
-        end
-    end)
-
-    -- 4. Альтернативный расчет через нижнюю часть объекта со смещением вниз (Fallback VIM)
-    pcall(function()
-        local vim = game:GetService("VirtualInputManager")
-        if vim then
-            local pos = targetButton.AbsolutePosition
-            local size = targetButton.AbsoluteSize
-            local cx = pos.X + (size.X / 2)
-
-            -- Смещаем точку клика значительно ниже центра по оси Y в нижнюю половину объекта:
-            -- Верхний край кнопки (pos.Y) + вся высота (size.Y) минус 5-7 пикселей,
-            -- либо к центру + 15..20 пикселей вниз, чтобы гарантированно избежать промаха выше кнопки на Ultrawide
-            local cy = pos.Y + size.Y - 6
-            if (cy - (pos.Y + size.Y / 2)) < 15 then
-                cy = pos.Y + (size.Y / 2) + 16
-            end
-
-            local sg = targetButton:FindFirstAncestorOfClass("ScreenGui")
-            local guiService = game:GetService("GuiService")
-            if sg and not sg.IgnoreGuiInset and guiService then
-                local inset = guiService:GetGuiInset()
-                cy = cy + inset.Y
-                cx = cx + inset.X
-            end
-
-            if cx > 0 and cy > 0 then
-                vim:SendMouseMoveEvent(cx, cy, game)
-                task.wait(0.03)
-                vim:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
-                task.wait(0.03)
-                vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
-                activated = true
-            end
-        end
-    end)
-
-    -- 5. Дополнительный fallback через VirtualUser со смещением вниз
-    pcall(function()
-        local vu = game:GetService("VirtualUser")
-        if vu then
-            local pos = targetButton.AbsolutePosition
-            local size = targetButton.AbsoluteSize
-            local cx = pos.X + (size.X / 2)
-
-            local cy = pos.Y + size.Y - 6
-            if (cy - (pos.Y + size.Y / 2)) < 15 then
-                cy = pos.Y + (size.Y / 2) + 16
-            end
-
-            local sg = targetButton:FindFirstAncestorOfClass("ScreenGui")
-            local guiService = game:GetService("GuiService")
-            if sg and not sg.IgnoreGuiInset and guiService then
-                local inset = guiService:GetGuiInset()
-                cy = cy + inset.Y
-                cx = cx + inset.X
-            end
-
-            if cx > 0 and cy > 0 then
-                vu:CaptureController()
-                vu:MouseMove(Vector2.new(cx, cy))
-                vu:Button1Down(Vector2.new(cx, cy))
-                task.wait(0.02)
-                vu:Button1Up(Vector2.new(cx, cy))
-                activated = true
-            end
-        end
-    end)
-
-    return activated
-end
-
--- Backward compatibility aliases
-local clickDialogueButtonVIM = activateDialogueButton
-local triggerDialogueButton = activateDialogueButton
 
 local function findDialogueOption()
     -- 1. Look inside known YBA dialogue containers in PlayerGui
