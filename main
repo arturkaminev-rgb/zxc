@@ -126,11 +126,46 @@ local function findDescendant(root, name)
     return nil
 end
 
+-- UTF-8 Cyrillic & Latin lowercase helper for Roblox Luau
+local function toLowerUtf8(str)
+    if not str or type(str) ~= "string" then return "" end
+    str = str:lower()
+    local res = {}
+    local i = 1
+    local len = #str
+    while i <= len do
+        local b1 = str:byte(i)
+        if b1 == 208 then
+            local b2 = str:byte(i + 1)
+            if b2 and b2 >= 144 and b2 <= 159 then
+                -- А - П (0xD0 0x90 .. 0xD0 0x9F) -> а - п (0xD0 0xB0 .. 0xD0 0xBF)
+                table.insert(res, string.char(208, b2 + 32))
+                i = i + 2
+            elseif b2 and b2 >= 160 and b2 <= 175 then
+                -- Р - Я (0xD0 0xA0 .. 0xD0 0xAF) -> р - я (0xD1 0x80 .. 0xD1 0x8F)
+                table.insert(res, string.char(209, b2 - 32))
+                i = i + 2
+            elseif b2 == 129 then
+                -- Ё (0xD0 0x81) -> ё (0xD1 0x91)
+                table.insert(res, string.char(209, 145))
+                i = i + 2
+            else
+                table.insert(res, string.char(b1))
+                i = i + 1
+            end
+        else
+            table.insert(res, string.char(b1))
+            i = i + 1
+        end
+    end
+    return table.concat(res)
+end
+
 local function findDescendantContaining(root, substr)
-    local low = substr:lower()
+    local low = toLowerUtf8(substr)
     for _, v in ipairs(root:GetDescendants()) do
-        if v.Name:lower():find(low, 1, true) then return v end
-        if (v:IsA("TextButton") or v:IsA("TextLabel")) and v.Text:lower():find(low, 1, true) then
+        if toLowerUtf8(v.Name):find(low, 1, true) then return v end
+        if (v:IsA("TextButton") or v:IsA("TextLabel")) and toLowerUtf8(v.Text):find(low, 1, true) then
             return v
         end
     end
@@ -149,12 +184,14 @@ local function clickWithCursor(guiObj)
         cy = absPos.Y + absSize.Y / 2
     end
 
-    -- 1. VirtualInputManager cursor mouse click (simulates hardware mouse input)
+    -- 1. VirtualInputManager hardware mouse simulation (Hover/Move + Click)
     pcall(function()
         local vim = game:GetService("VirtualInputManager")
         if vim and cx > 0 and cy > 0 then
+            vim:SendMouseMoveEvent(cx, cy, game)
+            task.wait(0.02)
             vim:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
-            task.wait(0.03)
+            task.wait(0.04)
             vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
             clicked = true
         end
@@ -165,8 +202,10 @@ local function clickWithCursor(guiObj)
         local vu = game:GetService("VirtualUser")
         if vu and cx > 0 and cy > 0 then
             vu:CaptureController()
-            vu:Button1Down(Vector2.new(cx, cy))
+            vu:MouseMove(Vector2.new(cx, cy))
             task.wait(0.02)
+            vu:Button1Down(Vector2.new(cx, cy))
+            task.wait(0.03)
             vu:Button1Up(Vector2.new(cx, cy))
             clicked = true
         end
@@ -174,10 +213,22 @@ local function clickWithCursor(guiObj)
 
     -- 3. firesignal (executors like Synapse, Krnl, Fluxus, Solara, Wave, Delta, etc.)
     if firesignal then
-        pcall(function() firesignal(guiObj.MouseButton1Down) end)
-        pcall(function() firesignal(guiObj.MouseButton1Click) end)
-        pcall(function() firesignal(guiObj.MouseButton1Up) end)
-        pcall(function() firesignal(guiObj.Activated) end)
+        local targets = { guiObj }
+        if guiObj.Parent and guiObj.Parent:IsA("GuiButton") then
+            table.insert(targets, guiObj.Parent)
+        end
+        for _, child in ipairs(guiObj:GetChildren()) do
+            if child:IsA("GuiButton") then
+                table.insert(targets, child)
+            end
+        end
+
+        for _, t in ipairs(targets) do
+            pcall(function() firesignal(t.MouseButton1Down) end)
+            pcall(function() firesignal(t.MouseButton1Click) end)
+            pcall(function() firesignal(t.Activated) end)
+            pcall(function() firesignal(t.MouseButton1Up) end)
+        end
         clicked = true
     end
 
@@ -238,8 +289,8 @@ local ITEM_GROUPS = {
 
 local function itemMatches(name, targetKey)
     if not name or not targetKey then return false end
-    local n = tostring(name):lower():gsub("^%s+", ""):gsub("%s+$", "")
-    local k = tostring(targetKey):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    local n = toLowerUtf8(tostring(name)):gsub("^%s+", ""):gsub("%s+$", "")
+    local k = toLowerUtf8(tostring(targetKey)):gsub("^%s+", ""):gsub("%s+$", "")
     if n:find(k, 1, true) or k:find(n, 1, true) then return true end
 
     for _, group in pairs(ITEM_GROUPS) do
@@ -665,9 +716,9 @@ local function unlockWorthiness()
         or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
 
     local skillsToLearn = {
-        "Agility I", "Agility 1",
-        "Worthiness I", "Worthiness 1",
-        "Worthiness II", "Worthiness 2",
+        "Agility I", "Agility 1", "Ловкость I", "Ловкость 1",
+        "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1",
+        "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2",
     }
 
     if rf or re then
@@ -825,64 +876,178 @@ local function buyFromShop(needItem, needRoka)
 end
 
 -- ── 5D · Dialogue Helper & Confirmer ─────────────────────────────────────────
+local AFFIRMATIVE_TERMS = {
+    -- Russian
+    "да", "съесть", "сьесть", "использовать", "применить", "принять",
+    "покушать", "скушать", "подтвердить", "хорошо", "ок", "вперед",
+    -- English
+    "yes", "eat", "use", "confirm", "accept", "sure", "ok"
+}
+
+local NEGATIVE_TERMS = {
+    -- Russian
+    "нет", "отмена", "не надо", "не хочу", "отказаться", "закрыть", "уйти", "отклонить",
+    -- English
+    "no", "cancel", "decline", "refuse", "close", "leave", "don't"
+}
+
 local function isAffirmativeDialogueWord(str)
-    if not str or type(str) ~= "string" then return false end
-    local s = str:lower()
-    local clean = s:gsub("[%p%s]+", "")
-    if clean == "yes" or clean == "да" or clean == "eat" or clean == "съесть"
-       or clean == "use" or clean == "использовать" or clean == "применить"
-       or clean == "confirm" or clean == "подтвердить" or clean == "покушать" then
-        return true
+    if not str or type(str) ~= "string" or str == "" then return false end
+    local lower = toLowerUtf8(str)
+    local clean = lower:gsub("[%p%s]+", "")
+
+    for _, neg in ipairs(NEGATIVE_TERMS) do
+        if clean == neg or lower:find(neg, 1, true) then
+            return false
+        end
     end
-    for w in s:gmatch("[%a\128-\255]+") do
-        if w == "yes" or w == "да" or w == "eat" or w == "съесть"
-           or w == "use" or w == "использовать" or w == "применить"
-           or w == "confirm" or w == "подтвердить" or w == "покушать" then
+
+    for _, aff in ipairs(AFFIRMATIVE_TERMS) do
+        if clean == aff or lower:find(aff, 1, true) then
             return true
         end
     end
     return false
 end
 
-local function findDialogueOption()
-    local cam = workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+local function isNegativeDialogueWord(str)
+    if not str or type(str) ~= "string" or str == "" then return false end
+    local lower = toLowerUtf8(str)
+    local clean = lower:gsub("[%p%s]+", "")
+    for _, neg in ipairs(NEGATIVE_TERMS) do
+        if clean == neg or lower:find(neg, 1, true) then
+            return true
+        end
+    end
+    return false
+end
 
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
-            local sg = v:FindFirstAncestorOfClass("ScreenGui")
-            local sgName = sg and sg.Name:lower() or ""
-            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
-                local pName = v.Parent and v.Parent.Name:lower() or ""
-                if not pName:find("player") and not pName:find("list") and not pName:find("quest") and not pName:find("stat") then
-                    local name = v.Name:lower()
-                    local btnText = (v:IsA("TextButton") and v.Text or "")
-                    local childText = ""
-                    for _, child in ipairs(v:GetDescendants()) do
-                        if child:IsA("TextLabel") and child.Visible then
-                            childText = childText .. " " .. child.Text
+local function getGuiFullText(guiObj)
+    if not guiObj then return "" end
+    local parts = {}
+    if (guiObj:IsA("TextButton") or guiObj:IsA("TextLabel")) and guiObj.Text and guiObj.Text ~= "" then
+        table.insert(parts, guiObj.Text)
+    end
+    for _, ch in ipairs(guiObj:GetDescendants()) do
+        if (ch:IsA("TextLabel") or ch:IsA("TextButton")) and ch.Text and ch.Text ~= "" then
+            table.insert(parts, ch.Text)
+        end
+    end
+    return table.concat(parts, " ")
+end
+
+local function isDialogueButtonAffirmative(v)
+    if not v or not v:IsA("GuiObject") then return false end
+
+    -- Ignore Scythe / Obsidian / Library GUI
+    local sg = v:FindFirstAncestorOfClass("ScreenGui")
+    local sgName = sg and sg.Name:lower() or ""
+    if sgName:find("obsidian") or sgName:find("library") or sgName:find("scythe") then
+        return false
+    end
+
+    -- Ignore Player list / Leaderboard / Chat
+    local p = v.Parent
+    while p and p ~= PlayerGui do
+        local pn = p.Name:lower()
+        if pn:find("leaderboard") or pn:find("playerlist") or pn:find("player_list") or pn:find("chat") then
+            return false
+        end
+        p = p.Parent
+    end
+
+    local name = toLowerUtf8(v.Name):gsub("[%p%s]+", "")
+
+    -- Direct negative button name
+    if name == "option2" or name == "choice2" or name == "button2" or name == "btn2" or name == "2"
+       or name == "no" or name == "cancel" or name == "нет" or name == "отмена" then
+        return false
+    end
+
+    local fullText = getGuiFullText(v)
+    if isNegativeDialogueWord(fullText) then
+        return false
+    end
+
+    if isAffirmativeDialogueWord(fullText) then
+        return true
+    end
+
+    -- Check button name
+    if name == "option1" or name == "choice1" or name == "button1" or name == "btn1" or name == "1"
+       or name == "option" or name == "choice"
+       or name == "yes" or name == "eat" or name == "use" or name == "confirm"
+       or name == "да" or name == "съесть" or name == "сьесть" or name == "использовать" then
+        return true
+    end
+
+    return false
+end
+
+local function findDialogueOption()
+    -- Priority 1: Look inside explicit dialogue / talk / NPC / prompt containers
+    for _, sg in ipairs(PlayerGui:GetChildren()) do
+        if sg:IsA("ScreenGui") and sg.Enabled then
+            local sgLow = sg.Name:lower()
+            if not sgLow:find("obsidian") and not sgLow:find("library") and not sgLow:find("scythe") then
+                local isDiagGui = sgLow:find("dialog") or sgLow:find("talk") or sgLow:find("npc") or sgLow:find("prompt") or sgLow:find("choice")
+
+                local containers = {}
+                if isDiagGui then
+                    table.insert(containers, sg)
+                else
+                    for _, ch in ipairs(sg:GetChildren()) do
+                        local chLow = ch.Name:lower()
+                        if chLow:find("dialog") or chLow:find("talk") or chLow:find("npc") or chLow:find("prompt") or chLow:find("choice") then
+                            table.insert(containers, ch)
+                        end
+                    end
+                end
+
+                for _, container in ipairs(containers) do
+                    for _, v in ipairs(container:GetDescendants()) do
+                        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+                            if isDialogueButtonAffirmative(v) then
+                                return v
+                            end
                         end
                     end
 
-                    local isOpt1 = name == "option1" or name == "choice1" or name == "option_1" or name == "choice_1" or name == "yes" or name == "eat" or name == "use"
-                    local isAff = isAffirmativeDialogueWord(btnText) or isAffirmativeDialogueWord(childText)
-
-                    if isOpt1 or isAff then
-                        local pos = v.AbsolutePosition
-                        if pos.Y > vp.Y * 0.35 and pos.Y < vp.Y * 0.98 and pos.X > vp.X * 0.1 and pos.X < vp.X * 0.9 then
-                            return v
+                    for _, f in ipairs(container:GetDescendants()) do
+                        local fn = f.Name:lower()
+                        if fn == "options" or fn == "choices" or fn == "buttons" then
+                            for _, btn in ipairs(f:GetChildren()) do
+                                if (btn:IsA("GuiButton") or btn:IsA("TextButton") or btn:IsA("ImageButton")) and btn.Visible then
+                                    if not isNegativeDialogueWord(getGuiFullText(btn)) then
+                                        return btn
+                                    end
+                                end
+                            end
                         end
                     end
                 end
             end
         end
     end
+
+    -- Priority 2: Global search across all PlayerGui for affirmative buttons
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+            local sz = v.AbsoluteSize
+            if sz.X > 15 and sz.Y > 10 then
+                if isDialogueButtonAffirmative(v) then
+                    return v
+                end
+            end
+        end
+    end
+
     return nil
 end
 
-local function confirmDialogue()
+local function confirmDialogue(toolName)
     local startTime = tick()
-    while tick() - startTime < 4.0 do
+    while tick() - startTime < 4.5 do
         local optBtn = findDialogueOption()
         if optBtn then
             -- Click option with cursor and firesignal
@@ -893,17 +1058,21 @@ local function confirmDialogue()
                 local char = LocalPlayer.Character
                 local re = char and char:FindFirstChild("RemoteEvent")
                 if re then
-                    re:FireServer("EndDialogue", {
-                        ["NPC"] = "Item",
-                        ["Option"] = "Option1",
-                        ["Dialogue"] = "Dialogue1"
-                    })
+                    local npcs = { "Item", "Rokakaka", "Mysterious Arrow" }
+                    if toolName then table.insert(npcs, 1, toolName) end
+                    for _, npcName in ipairs(npcs) do
+                        re:FireServer("EndDialogue", {
+                            ["NPC"] = npcName,
+                            ["Option"] = "Option1",
+                            ["Dialogue"] = "Dialogue1"
+                        })
+                    end
                 end
             end)
 
             task.wait(0.35)
 
-            -- Verify if dialogue has closed
+            -- Check if dialogue has closed
             local stillThere = findDialogueOption()
             if not stillThere then
                 return true
@@ -917,13 +1086,13 @@ local function confirmDialogue()
         end
         task.wait(0.12)
     end
-    return false
+    return not findDialogueOption()
 end
 
 -- ── Use Item with Cursor (Equip -> Click Screen -> Confirm Dialogue) ──────────
 local function useItemWithCursor(itemName)
     local tool = smartEquipItem(itemName)
-    task.wait(0.3)
+    task.wait(0.35)
 
     local char = LocalPlayer.Character
     local inHand = tool or (char and char:FindFirstChildOfClass("Tool"))
@@ -936,13 +1105,13 @@ local function useItemWithCursor(itemName)
     task.wait(0.4)
 
     -- Confirm dialogue prompt with cursor click
-    local ok = confirmDialogue()
+    local ok = confirmDialogue(inHand and inHand.Name or itemName)
     if not ok then
         -- Retry screen click once if dialogue hasn't opened yet
         if inHand then pcall(function() inHand:Activate() end) end
         clickScreenWithCursor()
         task.wait(0.4)
-        ok = confirmDialogue()
+        ok = confirmDialogue(inHand and inHand.Name or itemName)
     end
     return ok
 end
@@ -1057,14 +1226,41 @@ local function runLoop()
         pcall(function()
             Library:Notify("Использование Рокакаки (сброс)...", 3)
         end)
-        local rokaOk = useItemWithCursor("Rokakaka")
-        if rokaOk then
-            task.wait(2.5)
-            waitAlive()
-            task.wait(0.5)
-        else
-            task.wait(0.5)
+
+        local initialChar = LocalPlayer.Character
+        local eaten = false
+        local rokaTries = 0
+
+        while State.Running and not eaten and rokaTries < 4 do
+            rokaTries = rokaTries + 1
+            local ok = useItemWithCursor("Rokakaka")
+
+            -- Wait and check if character respawned, died, or Rokakaka was consumed
+            local t0 = tick()
+            while tick() - t0 < 3.5 do
+                local c = LocalPlayer.Character
+                local h = c and c:FindFirstChildOfClass("Humanoid")
+                if c ~= initialChar or not h or h.Health <= 0 then
+                    eaten = true
+                    break
+                end
+                if ok and not findDialogueOption() then
+                    local inH = c and c:FindFirstChildOfClass("Tool")
+                    if not inH or not itemMatches(inH.Name, "Rokakaka") then
+                        eaten = true
+                        break
+                    end
+                end
+                task.wait(0.2)
+            end
+
+            if eaten then break end
+            task.wait(0.4)
         end
+
+        -- Ensure character is fully alive and respawned after Rokakaka
+        waitAlive()
+        task.wait(0.8)
 
         if not State.Running then break end
 
@@ -1072,7 +1268,7 @@ local function runLoop()
         -- "после чего прокачивал достойность не открывая меню в фоновом режиме"
         State.CurrentPhase = "UNLOCKING_WORTHINESS"
         pcall(unlockWorthiness)
-        task.wait(0.2)
+        task.wait(0.3)
         waitAlive()
 
         if not State.Running then break end
@@ -1083,17 +1279,22 @@ local function runLoop()
         pcall(function()
             Library:Notify("Использование " .. Config.ItemType .. "...", 3)
         end)
-        local itemOk = useItemWithCursor(Config.ItemType)
-        if itemOk then
-            task.wait(3.0)
-            waitAlive()
-        else
-            -- Retry once if dialogue did not confirm immediately
-            task.wait(0.5)
-            useItemWithCursor(Config.ItemType)
-            task.wait(2.5)
-            waitAlive()
+
+        local arrowUsed = false
+        local arrowTries = 0
+        while State.Running and not arrowUsed and arrowTries < 3 do
+            arrowTries = arrowTries + 1
+            local itemOk = useItemWithCursor(Config.ItemType)
+            if itemOk then
+                arrowUsed = true
+                break
+            else
+                task.wait(0.5)
+            end
         end
+
+        task.wait(3.0)
+        waitAlive()
 
         if not State.Running then break end
 
