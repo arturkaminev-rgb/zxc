@@ -172,17 +172,36 @@ local function findDescendantContaining(root, substr)
     return nil
 end
 
+local function getGuiScreenCenter(guiObj)
+    if not guiObj or not guiObj:IsA("GuiObject") then return 0, 0, 0, 0 end
+    local absPos = guiObj.AbsolutePosition
+    local absSize = guiObj.AbsoluteSize
+    local rawX = absPos.X + absSize.X / 2
+    local rawY = absPos.Y + absSize.Y / 2
+
+    local guiService = game:GetService("GuiService")
+    local inset = guiService and guiService:GetGuiInset() or Vector2.new(0, 0)
+    local sg = guiObj:FindFirstAncestorOfClass("ScreenGui")
+
+    local cx = rawX
+    local cy = rawY
+
+    -- In Roblox, GuiObject.AbsolutePosition does NOT include the CoreGui topbar inset
+    -- unless ScreenGui.IgnoreGuiInset is true. VirtualInputManager expects coordinates
+    -- relative to the entire game window, so we must add inset.Y to cy!
+    if not sg or not sg.IgnoreGuiInset then
+        cy = cy + inset.Y
+        cx = cx + inset.X
+    end
+
+    return cx, cy, rawX, rawY
+end
+
 local function clickWithCursor(guiObj)
     if not guiObj then return false end
     local clicked = false
 
-    local cx, cy = 0, 0
-    if guiObj:IsA("GuiObject") then
-        local absPos = guiObj.AbsolutePosition
-        local absSize = guiObj.AbsoluteSize
-        cx = absPos.X + absSize.X / 2
-        cy = absPos.Y + absSize.Y / 2
-    end
+    local cx, cy, rawX, rawY = getGuiScreenCenter(guiObj)
 
     -- 1. VirtualInputManager hardware mouse simulation (Hover/Move + Click)
     pcall(function()
@@ -194,6 +213,16 @@ local function clickWithCursor(guiObj)
             task.wait(0.04)
             vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
             clicked = true
+
+            -- Backup click at raw coordinates if inset was applied
+            if cy ~= rawY then
+                task.wait(0.02)
+                vim:SendMouseMoveEvent(rawX, rawY, game)
+                task.wait(0.01)
+                vim:SendMouseButtonEvent(rawX, rawY, 0, true, game, 0)
+                task.wait(0.02)
+                vim:SendMouseButtonEvent(rawX, rawY, 0, false, game, 0)
+            end
         end
     end)
 
@@ -214,10 +243,12 @@ local function clickWithCursor(guiObj)
     -- 3. firesignal (executors like Synapse, Krnl, Fluxus, Solara, Wave, Delta, etc.)
     if firesignal then
         local targets = { guiObj }
-        if guiObj.Parent and guiObj.Parent:IsA("GuiButton") then
-            table.insert(targets, guiObj.Parent)
+        local cur = guiObj.Parent
+        while cur and cur:IsA("GuiObject") and not cur:IsA("ScreenGui") do
+            if cur:IsA("GuiButton") then table.insert(targets, cur) end
+            cur = cur.Parent
         end
-        for _, child in ipairs(guiObj:GetChildren()) do
+        for _, child in ipairs(guiObj:GetDescendants()) do
             if child:IsA("GuiButton") then
                 table.insert(targets, child)
             end
@@ -596,6 +627,59 @@ local function equipTool(substring)
     return smartEquipItem(substring)
 end
 
+local function findCharacterMenuButton()
+    local searchTerms = { "character", "персонаж", "stats", "stat", "skills", "навыки", "player" }
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if v:IsA("GuiButton") and v.Visible then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local n = toLowerUtf8(v.Name)
+                local t = toLowerUtf8(v.Text or "")
+                for _, term in ipairs(searchTerms) do
+                    if n:find(term, 1, true) or t:find(term, 1, true) then
+                        return v
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getSkillTreeNodes()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+    local nodes = {}
+    for _, v in ipairs(PlayerGui:GetDescendants()) do
+        if (v:IsA("GuiButton") or v:IsA("ImageButton") or v:IsA("TextButton")) and v.Visible then
+            local sg = v:FindFirstAncestorOfClass("ScreenGui")
+            local sgName = sg and sg.Name:lower() or ""
+            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                local p = v.Parent and v.Parent.Name:lower() or ""
+                if not p:find("leaderboard") and not p:find("chat") and not p:find("hotbar") and not p:find("playerlist") then
+                    local sz = v.AbsoluteSize
+                    local pos = v.AbsolutePosition
+                    -- Hexagon skill tree nodes
+                    if sz.X >= 20 and sz.X <= 140 and sz.Y >= 20 and sz.Y <= 140 then
+                        if pos.Y > vp.Y * 0.08 and pos.Y < vp.Y * 0.92 and pos.X > vp.X * 0.02 and pos.X < vp.X * 0.70 then
+                            local txt = toLowerUtf8(v:IsA("TextButton") and v.Text or "")
+                            if txt ~= "back" and txt ~= "назад" and txt ~= "menu" and txt ~= "меню" and txt ~= "close" and txt ~= "закрыть" then
+                                table.insert(nodes, v)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- Sort nodes by Y descending (from bottom-most / starting node upwards to Worthiness II)
+    table.sort(nodes, function(a, b)
+        return a.AbsolutePosition.Y > b.AbsolutePosition.Y
+    end)
+    return nodes
+end
+
 -- ── Skill Tree Open / Close in Background Mode ────────────────────────────────
 local function openSkillTree()
     local backBtn = findDescendantContaining(PlayerGui, "BACK")
@@ -604,39 +688,37 @@ local function openSkillTree()
         return true
     end
 
-    -- 1. Click Menu button with CURSOR (not key M)
+    -- 1. Click Menu button with CURSOR
     local menuBtn = findMenuButton()
     if menuBtn then
         clickWithCursor(menuBtn)
-    end
-    task.wait(0.2)
-
-    -- Hide menu from view immediately for background mode
-    setMenuBackgroundMode(true)
-
-    -- 2. Click Character / Персонаж with CURSOR
-    local charBtn = findDescendantContaining(PlayerGui, "Персонаж")
-        or findDescendantContaining(PlayerGui, "Character")
-    if charBtn and charBtn:IsA("GuiButton") then
-        clickWithCursor(charBtn)
         task.wait(0.25)
+    end
+
+    -- 2. Click Character / Персонаж button in Menu
+    local charBtn = findCharacterMenuButton()
+    if charBtn then
+        clickWithCursor(charBtn)
+        task.wait(0.3)
     end
 
     -- 3. Click Skill Tree / Навыки if present
     local skillBtn = findDescendantContaining(PlayerGui, "Skill Tree")
         or findDescendantContaining(PlayerGui, "Навыки")
-    if skillBtn and skillBtn:IsA("GuiButton") then
+        or findDescendantContaining(PlayerGui, "Tree")
+    if skillBtn and skillBtn:IsA("GuiButton") and skillBtn.Visible then
         clickWithCursor(skillBtn)
         task.wait(0.25)
     end
 
-    for _ = 1, 8 do
+    -- 4. Verify BACK button appeared
+    for _ = 1, 10 do
         backBtn = findDescendantContaining(PlayerGui, "BACK")
             or findDescendantContaining(PlayerGui, "Назад")
-        if backBtn and backBtn:IsA("GuiButton") then
+        if backBtn and backBtn:IsA("GuiButton") and backBtn.Visible then
             return true
         end
-        task.wait(0.05)
+        task.wait(0.08)
     end
     return false
 end
@@ -644,15 +726,15 @@ end
 local function closeSkillTree()
     local backBtn = findDescendantContaining(PlayerGui, "BACK")
         or findDescendantContaining(PlayerGui, "Назад")
-    if backBtn and backBtn:IsA("GuiButton") then
+    if backBtn and backBtn:IsA("GuiButton") and backBtn.Visible then
         clickWithCursor(backBtn)
-        task.wait(0.15)
+        task.wait(0.2)
     end
 
     local closeBtn = findDescendantContaining(PlayerGui, "Close")
         or findDescendantContaining(PlayerGui, "Закрыть")
         or findDescendantContaining(PlayerGui, "Exit")
-    if closeBtn and closeBtn:IsA("GuiButton") then
+    if closeBtn and closeBtn:IsA("GuiButton") and closeBtn.Visible then
         clickWithCursor(closeBtn)
         task.wait(0.15)
     else
@@ -666,85 +748,99 @@ end
 
 local function learnSkillNode(node)
     if not node then return false end
-    -- First click: select node with cursor
+    -- First click: select node
     clickWithCursor(node)
-    task.wait(0.15)
+    task.wait(0.18)
 
-    -- Check if card has "Нажмите еще раз, чтобы узнать" or "Click again to learn"
-    local needsSecondClick = false
+    -- Second click: confirm learn (YBA "Нажмите еще раз, чтобы узнать" mechanic)
+    clickWithCursor(node)
+    task.wait(0.18)
+
+    -- Also check if a card button or learn button appeared
     for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("TextLabel") and v.Visible then
-            local t = v.Text:lower()
-            if t:find("нажмите еще раз") or t:find("click again") then
-                needsSecondClick = true
+        if v:IsA("GuiButton") and v.Visible then
+            local t = toLowerUtf8(v.Text or "")
+            local n = toLowerUtf8(v.Name or "")
+            if t == "learn" or t == "выучить" or t == "купить" or t:find("нажмите еще раз")
+               or n == "learn" or n == "buy" then
+                clickWithCursor(v)
+                task.wait(0.15)
                 break
             end
         end
     end
-
-    -- Check for explicit learn button
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local t = (v.Text or ""):lower()
-            if t == "learn" or t == "выучить" or t == "купить" then
-                clickWithCursor(v)
-                task.wait(0.2)
-                return true
-            end
-        end
-    end
-
-    -- Second click: Learn skill with cursor (YBA mechanic)
-    if needsSecondClick then
-        clickWithCursor(node)
-        task.wait(0.2)
-        return true
-    end
-
-    return false
+    return true
 end
 
--- ── 5A · Worthiness unlock (100% Background Mode — No Menu Opening!) ─────────
+-- ── 5A · Worthiness unlock (Skill Tree Navigation + Remotes) ──────────────────
 local function unlockWorthiness()
     State.CurrentPhase = "UNLOCKING_WORTHINESS"
-    pcall(function() Library:Notify("Фоновая прокачка Достоинства (без открытия меню)...", 2) end)
+    pcall(function() Library:Notify("Прокачка Достоинства (Worthiness II)...", 3) end)
 
-    local char = LocalPlayer.Character
-    local rf = (char and char:FindFirstChild("RemoteFunction"))
-        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
-    local re = (char and char:FindFirstChild("RemoteEvent"))
-        or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
-
-    local skillsToLearn = {
-        "Agility I", "Agility 1", "Ловкость I", "Ловкость 1",
-        "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1",
-        "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2",
-    }
-
-    if rf or re then
-        for _, skillName in ipairs(skillsToLearn) do
-            if rf then
-                pcall(function()
-                    rf:InvokeServer("LearnSkill", {
-                        ["Skill"] = skillName,
-                        ["SkillTreeType"] = "Character",
-                    })
-                end)
+    -- 1. In-game Skill Tree Navigation & Learning
+    local ok = openSkillTree()
+    if ok then
+        task.wait(0.25)
+        local nodes = getSkillTreeNodes()
+        if #nodes > 0 then
+            -- Learn up to 3 nodes from bottom upwards (Root/Agility, Worthiness I, Worthiness II)
+            local countToLearn = math.min(#nodes, 3)
+            for i = 1, countToLearn do
+                learnSkillNode(nodes[i])
+                task.wait(0.15)
             end
-            if re then
-                pcall(function()
-                    re:FireServer("LearnSkill", {
-                        ["Skill"] = skillName,
-                        ["SkillTreeType"] = "Character",
-                    })
-                end)
+            -- Check if any node is purple or explicitly Worthiness
+            for _, n in ipairs(nodes) do
+                if hasPurpleAppearance(n) or hasWorthinessName(n) then
+                    learnSkillNode(n)
+                    task.wait(0.15)
+                end
             end
-            task.wait(0.08)
         end
+        task.wait(0.2)
+        closeSkillTree()
+        task.wait(0.2)
     end
 
+    -- 2. Direct remote invocation fallback
+    pcall(function()
+        local char = LocalPlayer.Character
+        local rf = (char and char:FindFirstChild("RemoteFunction"))
+            or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteFunction", true)
+        local re = (char and char:FindFirstChild("RemoteEvent"))
+            or game:GetService("ReplicatedStorage"):FindFirstChild("RemoteEvent", true)
+
+        local skillsToLearn = {
+            "Agility I", "Agility 1", "Ловкость I", "Ловкость 1",
+            "Worthiness I", "Worthiness 1", "Достоинство I", "Достоинство 1",
+            "Worthiness II", "Worthiness 2", "Достоинство II", "Достоинство 2",
+        }
+
+        if rf or re then
+            for _, skillName in ipairs(skillsToLearn) do
+                if rf then
+                    pcall(function()
+                        rf:InvokeServer("LearnSkill", {
+                            ["Skill"] = skillName,
+                            ["SkillTreeType"] = "Character",
+                        })
+                    end)
+                end
+                if re then
+                    pcall(function()
+                        re:FireServer("LearnSkill", {
+                            ["Skill"] = skillName,
+                            ["SkillTreeType"] = "Character",
+                        })
+                    end)
+                end
+                task.wait(0.04)
+            end
+        end
+    end)
+
     State.Worthiness = "LEARNED"
-    task.wait(0.2)
+    task.wait(0.25)
 end
 
 -- ── 5B · Map Scavenger ────────────────────────────────────────────────────────
@@ -1187,6 +1283,85 @@ local function detectCurrentStand()
     return "None"
 end
 
+-- ── 5E-2 · Prominent On-Screen Stand Display Banner ──────────────────────────
+local standBannerGui = nil
+
+local function showStandBanner(standName, targetStand, isTarget)
+    pcall(function()
+        local parentGui = game:GetService("CoreGui"):FindFirstChild("RobloxGui")
+            or LocalPlayer:FindFirstChild("PlayerGui")
+            or game:GetService("CoreGui")
+
+        if not standBannerGui or not standBannerGui.Parent then
+            standBannerGui = Instance.new("ScreenGui")
+            standBannerGui.Name = "Scythe_StandBannerGui"
+            standBannerGui.ResetOnSpawn = false
+            standBannerGui.DisplayOrder = 999999
+            standBannerGui.Parent = parentGui
+        end
+
+        local old = standBannerGui:FindFirstChild("BannerFrame")
+        if old then old:Destroy() end
+
+        local frame = Instance.new("Frame")
+        frame.Name = "BannerFrame"
+        frame.Size = UDim2.new(0, 500, 0, 115)
+        frame.Position = UDim2.new(0.5, -250, 0, 45)
+        frame.BackgroundColor3 = isTarget and Color3.fromRGB(15, 42, 22) or Color3.fromRGB(22, 22, 34)
+        frame.BackgroundTransparency = 0.08
+        frame.BorderSizePixel = 0
+        frame.Parent = standBannerGui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 12)
+        corner.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 2.5
+        stroke.Color = isTarget and Color3.fromRGB(50, 255, 120) or Color3.fromRGB(190, 110, 255)
+        stroke.Parent = frame
+
+        local title = Instance.new("TextLabel")
+        title.Size = UDim2.new(1, 0, 0, 24)
+        title.Position = UDim2.new(0, 0, 0, 8)
+        title.BackgroundTransparency = 1
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 13
+        title.TextColor3 = isTarget and Color3.fromRGB(100, 255, 160) or Color3.fromRGB(190, 190, 230)
+        title.Text = isTarget and "★ ЦЕЛЕВОЙ СТЕНД ВЫБИТ! ★" or "SCYTHE | СТЕНД ФАРМ"
+        title.Parent = frame
+
+        local standLabel = Instance.new("TextLabel")
+        standLabel.Size = UDim2.new(1, -20, 0, 44)
+        standLabel.Position = UDim2.new(0, 10, 0, 32)
+        standLabel.BackgroundTransparency = 1
+        standLabel.Font = Enum.Font.GothamBlack
+        standLabel.TextSize = 26
+        standLabel.TextColor3 = isTarget and Color3.fromRGB(255, 225, 60) or Color3.fromRGB(255, 255, 255)
+        standLabel.Text = "ВЫПАЛ СТЕНД: " .. tostring(standName)
+        standLabel.TextScaled = true
+        standLabel.Parent = frame
+
+        local subLabel = Instance.new("TextLabel")
+        subLabel.Size = UDim2.new(1, 0, 0, 22)
+        subLabel.Position = UDim2.new(0, 0, 0, 80)
+        subLabel.BackgroundTransparency = 1
+        subLabel.Font = Enum.Font.GothamMedium
+        subLabel.TextSize = 14
+        subLabel.TextColor3 = isTarget and Color3.fromRGB(200, 255, 200) or Color3.fromRGB(200, 200, 230)
+        subLabel.Text = isTarget and "Фарм успешно завершен!" or ("Нужен: " .. tostring(targetStand))
+        subLabel.Parent = frame
+
+        task.spawn(function()
+            local myFrame = frame
+            task.wait(isTarget and 15 or 6.5)
+            if myFrame and myFrame.Parent then
+                myFrame:Destroy()
+            end
+        end)
+    end)
+end
+
 -- ── 5F · Reroll Loop ─────────────────────────────────────────────────────────
 local function runLoop()
     while State.Running do
@@ -1197,7 +1372,9 @@ local function runLoop()
         State.ActiveStand  = currentStand
 
         if currentStand ~= "None" and currentStand ~= "Standless" and currentStand ~= "" then
-            if currentStand:lower():find(Config.TargetStand:lower(), 1, true) then
+            local isMatch = currentStand:lower():find(Config.TargetStand:lower(), 1, true) ~= nil
+            if isMatch then
+                showStandBanner(currentStand, Config.TargetStand, true)
                 State.CurrentPhase = "FINISHED"
                 State.Running      = false
 
@@ -1309,8 +1486,12 @@ local function runLoop()
         until (newStand ~= "None" and newStand ~= "Standless") or tick() - detectStart > 7
 
         State.ActiveStand = newStand
+        local isTarget = newStand ~= "None" and newStand ~= "Standless" and (newStand:lower():find(Config.TargetStand:lower(), 1, true) ~= nil)
 
-        if newStand ~= "None" and newStand ~= "Standless" and newStand:lower():find(Config.TargetStand:lower(), 1, true) then
+        -- Write on screen which stand dropped!
+        showStandBanner(newStand, Config.TargetStand, isTarget)
+
+        if isTarget then
             State.CurrentPhase = "FINISHED"
             State.Running      = false
 
