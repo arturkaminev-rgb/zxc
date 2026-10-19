@@ -852,67 +852,105 @@ local function isDialogueButtonAffirmative(v)
     return false
 end
 
--- ── Physical Mouse Click via VirtualInputManager on Dialogue Button ────────────
-local function clickDialogueButtonVIM(button)
-    if not button or not button:IsA("GuiObject") then return false end
-    local cx, cy, rawX, rawY = getGuiScreenCenter(button)
-    local clicked = false
+-- ── 5D · Direct GUI Engine Dialogue Button Activation (Ultrawide-Safe) ────────
+local function activateDialogueButton(targetButton)
+    if not targetButton or not targetButton:IsA("GuiObject") then return false end
+    local activated = false
 
-    local vim = game:GetService("VirtualInputManager")
-    if vim and cx > 0 and cy > 0 then
-        pcall(function()
-            vim:SendMouseMoveEvent(cx, cy, game)
-            task.wait(0.04)
-            vim:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
-            task.wait(0.04)
-            vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
-            clicked = true
-
-            -- Резервный клик по координатам без смещения TopBar (на случай вариаций движка)
-            if cy ~= rawY then
-                task.wait(0.02)
-                vim:SendMouseMoveEvent(rawX, rawY, game)
-                task.wait(0.02)
-                vim:SendMouseButtonEvent(rawX, rawY, 0, true, game, 0)
-                task.wait(0.04)
-                vim:SendMouseButtonEvent(rawX, rawY, 0, false, game, 0)
+    -- 1. Системный фокус движка Roblox (GuiService.SelectedObject) + виртуальный ввод клавиши Return
+    pcall(function()
+        local guiService = game:GetService("GuiService")
+        local vim = game:GetService("VirtualInputManager")
+        if guiService then
+            guiService.SelectedObject = targetButton
+            task.wait(0.05)
+            if vim then
+                vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                task.wait(0.03)
+                vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
             end
-        end)
+            guiService.SelectedObject = nil
+            activated = true
+        end
+    end)
+
+    -- 2. Прямой программный вызов событий объекта кнопки через firesignal
+    if firesignal then
+        pcall(function() firesignal(targetButton.Activated) end)
+        pcall(function() firesignal(targetButton.MouseButton1Click) end)
+        pcall(function() firesignal(targetButton.MouseButton1Down) end)
+        pcall(function() firesignal(targetButton.MouseButton1Up) end)
+        activated = true
     end
 
-    -- VirtualUser fallback
+    -- 3. Встроенный метод эксплоита FireMouseButton1Click (если поддерживается средой)
+    pcall(function()
+        if targetButton.FireMouseButton1Click then
+            targetButton:FireMouseButton1Click()
+            activated = true
+        end
+    end)
+
+    -- 4. Альтернативный расчет через абсолютный центр самого объекта (Fallback VIM)
+    pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        if vim then
+            local absPos = targetButton.AbsolutePosition
+            local absSize = targetButton.AbsoluteSize
+            local cx = absPos.X + (absSize.X / 2)
+            local cy = absPos.Y + (absSize.Y / 2)
+
+            local sg = targetButton:FindFirstAncestorOfClass("ScreenGui")
+            local guiService = game:GetService("GuiService")
+            if sg and not sg.IgnoreGuiInset and guiService then
+                local inset = guiService:GetGuiInset()
+                cy = cy + inset.Y
+                cx = cx + inset.X
+            end
+
+            if cx > 0 and cy > 0 then
+                vim:SendMouseMoveEvent(cx, cy, game)
+                task.wait(0.03)
+                vim:SendMouseButtonEvent(cx, cy, 0, true, game, 0)
+                task.wait(0.03)
+                vim:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
+                activated = true
+            end
+        end
+    end)
+
+    -- 5. Дополнительный fallback через VirtualUser
     pcall(function()
         local vu = game:GetService("VirtualUser")
-        if vu and cx > 0 and cy > 0 then
-            vu:CaptureController()
-            vu:MouseMove(Vector2.new(cx, cy))
-            task.wait(0.02)
-            vu:Button1Down(Vector2.new(cx, cy))
-            task.wait(0.03)
-            vu:Button1Up(Vector2.new(cx, cy))
-            clicked = true
+        if vu then
+            local absPos = targetButton.AbsolutePosition
+            local absSize = targetButton.AbsoluteSize
+            local cx = absPos.X + (absSize.X / 2)
+            local cy = absPos.Y + (absSize.Y / 2)
+            local sg = targetButton:FindFirstAncestorOfClass("ScreenGui")
+            local guiService = game:GetService("GuiService")
+            if sg and not sg.IgnoreGuiInset and guiService then
+                local inset = guiService:GetGuiInset()
+                cy = cy + inset.Y
+                cx = cx + inset.X
+            end
+            if cx > 0 and cy > 0 then
+                vu:CaptureController()
+                vu:MouseMove(Vector2.new(cx, cy))
+                vu:Button1Down(Vector2.new(cx, cy))
+                task.wait(0.02)
+                vu:Button1Up(Vector2.new(cx, cy))
+                activated = true
+            end
         end
     end)
 
-    -- firesignal fallback
-    if firesignal then
-        pcall(function() firesignal(button.MouseButton1Down) end)
-        pcall(function() firesignal(button.MouseButton1Click) end)
-        pcall(function() firesignal(button.Activated) end)
-        pcall(function() firesignal(button.MouseButton1Up) end)
-    end
-
-    pcall(function()
-        if button.FireMouseButton1Click then
-            button:FireMouseButton1Click()
-        end
-    end)
-
-    return clicked
+    return activated
 end
 
--- Backward compatibility alias
-local triggerDialogueButton = clickDialogueButtonVIM
+-- Backward compatibility aliases
+local clickDialogueButtonVIM = activateDialogueButton
+local triggerDialogueButton = activateDialogueButton
 
 local function findDialogueOption()
     -- 1. Look inside known YBA dialogue containers in PlayerGui
@@ -1005,18 +1043,18 @@ local function fireDialogueRemotes(toolName)
     end
 end
 
--- ── Dialogue Confirmation (Physical VIM Mouse Click + RemoteEvent) ────────────
+-- ── Dialogue Confirmation (Direct GUI Engine Activation + RemoteEvent) ────────
 local function confirmDialogue(toolName)
-    local optBtn = findDialogueOption()
-    local clicked = false
-    if optBtn then
-        clicked = clickDialogueButtonVIM(optBtn)
+    local targetButton = findDialogueOption()
+    local activated = false
+    if targetButton then
+        activated = activateDialogueButton(targetButton)
     end
     fireDialogueRemotes(toolName)
-    return clicked or (optBtn ~= nil)
+    return activated or (targetButton ~= nil)
 end
 
--- ── Headless Item Usage (Equip -> Activate -> VIM Mouse Click Confirmation Loop) ──
+-- ── Headless Item Usage (Equip -> Activate -> GUI Object Activation Loop) ─────
 local function useItemHeadless(itemName)
     local char = LocalPlayer.Character
     if not char then return false end
@@ -1040,11 +1078,11 @@ local function useItemHeadless(itemName)
         pcall(function() inHand:Activate() end)
     end
 
-    -- 3. Цикл ожидания ответа и подтверждения диалога кликом мыши (таймаут 3.5 - 4.0 сек)
+    -- 3. Цикл подтверждения диалога (попытки каждые 0.25–0.3 сек, общий таймаут 3.5–4.0 сек)
     local initialChar = char
     local startTime = tick()
     local lastActivate = tick()
-    local dialogueSeen = false
+    local buttonFoundOnce = false
 
     while tick() - startTime < 4.0 do
         -- Проверка начала сброса: смерть / респавн персонажа (Rokakaka)
@@ -1054,26 +1092,29 @@ local function useItemHeadless(itemName)
             return true
         end
 
-        -- Проверка исчезновения предмета из руки (предмет был успешно съеден / использован)
+        -- Проверка исчезновения предмета из руки (предмет был успешно съеден / применен)
         local curTool = curChar:FindFirstChildOfClass("Tool")
         if not curTool or not itemMatches(curTool.Name, itemName) then
             return true
         end
 
-        -- а) GUI-триггер: поиск активного окна диалога
-        local optBtn = findDialogueOption()
-        if optBtn then
-            dialogueSeen = true
-            -- б) Физический клик мыши через VirtualInputManager по кнопке подтверждения («Да» / «Option1»)
-            clickDialogueButtonVIM(optBtn)
+        -- 1. Динамический поиск объекта активной кнопки подтверждения в интерфейсе
+        local targetButton = findDialogueOption()
+
+        if targetButton then
+            buttonFoundOnce = true
+
+            -- 2. Активация кнопки напрямую через GUI Engine (SelectedObject, firesignal, FireMouseButton1Click + Fallback)
+            activateDialogueButton(targetButton)
 
             -- в) Сетевой вызов для дублирования: отправка RemoteEvent EndDialogue
             fireDialogueRemotes(curTool and curTool.Name or itemName)
 
-            task.wait(0.1)
+            -- Интервал между попытками активации: 0.25–0.3 секунды
+            task.wait(0.25)
         else
-            -- Если диалог уже открывался, мы по нему кликнули, и окно диалога закрылось:
-            if dialogueSeen then
+            -- Если кнопка уже появлялась и была нажата, а теперь исчезла из интерфейса:
+            if buttonFoundOnce then
                 task.wait(0.2)
                 local endTool = curChar:FindFirstChildOfClass("Tool")
                 if not endTool or not itemMatches(endTool.Name, itemName) then
@@ -1081,7 +1122,7 @@ local function useItemHeadless(itemName)
                 end
             end
 
-            -- Если диалог еще не появился через 0.4 сек, активируем тул повторно
+            -- Если диалог еще не появился через 0.4 сек, повторно активируем тул
             if tick() - lastActivate > 0.4 and curTool then
                 pcall(function() curTool:Activate() end)
                 lastActivate = tick()
