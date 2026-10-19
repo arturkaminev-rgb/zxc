@@ -228,26 +228,28 @@ local function clickScreenWithCursor()
     end
 end
 
-local ITEM_ALIASES = {
-    ["mysterious arrow"] = { "mysterious arrow", "таинственная стрела", "таинственн", "стрела", "arrow" },
-    ["lucky arrow"]      = { "lucky arrow", "удачная стрела", "удачлив", "lucky" },
-    ["rokakaka"]         = { "rokakaka", "рокакака", "чистая рока", "чистая рокакака", "рока", "roka" },
-    ["pure rokakaka"]    = { "pure rokakaka", "чистая рокакака", "чистая рока" },
-    ["rib cage of the saint's corpse"] = { "rib cage", "ребро", "труп", "saint's corpse" },
+local ITEM_GROUPS = {
+    arrow = { "mysterious arrow", "таинственная стрела", "таинственн", "стрела", "arrow" },
+    lucky = { "lucky arrow", "удачная стрела", "удачлив", "lucky" },
+    roka  = { "rokakaka", "рокакака", "чистая рока", "чистая рокакака", "чистая", "рока", "roka" },
+    pure  = { "pure rokakaka", "чистая рокакака", "чистая рока" },
+    rib   = { "rib cage", "ребро", "труп", "saint's corpse" },
 }
 
 local function itemMatches(name, targetKey)
-    if not name or type(name) ~= "string" then return false end
-    local lowName = name:lower():gsub("^%s+", ""):gsub("%s+$", "")
-    local lowKey = targetKey:lower():gsub("^%s+", ""):gsub("%s+$", "")
-    if lowName:find(lowKey, 1, true) then return true end
-    local aliases = ITEM_ALIASES[lowKey]
-    if aliases then
-        for _, alias in ipairs(aliases) do
-            if lowName:find(alias:lower(), 1, true) then
-                return true
-            end
+    if not name or not targetKey then return false end
+    local n = tostring(name):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    local k = tostring(targetKey):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if n:find(k, 1, true) or k:find(n, 1, true) then return true end
+
+    for _, group in pairs(ITEM_GROUPS) do
+        local nMatch = false
+        local kMatch = false
+        for _, alias in ipairs(group) do
+            if n:find(alias, 1, true) then nMatch = true end
+            if k:find(alias, 1, true) then kMatch = true end
         end
+        if nMatch and kMatch then return true end
     end
     return false
 end
@@ -342,42 +344,47 @@ local function hasWorthinessName(guiObj)
     return false
 end
 
--- ── Background Mode: Hide Menu UI from Player's Screen ────────────────────────
-local hiddenFrames = {}
-
+-- ── Background Mode: Fast & Clean Execution ─────────────────────────────────
 local function setMenuBackgroundMode(enabled)
-    if enabled then
-        hiddenFrames = {}
-        for _, g in ipairs(PlayerGui:GetChildren()) do
-            if g:IsA("ScreenGui") and g.Name ~= "Obsidian" and g.Name ~= "Library" then
-                for _, f in ipairs(g:GetChildren()) do
-                    if f:IsA("GuiObject") then
-                        local n = f.Name:lower()
-                        if n:find("menu") or n:find("skill") or n:find("tree") or n:find("char") or n:find("inv") then
-                            if f.Visible and f.Position.X.Scale < 5 then
-                                table.insert(hiddenFrames, { frame = f, origPos = f.Position, origVis = f.Visible })
-                                -- Move offscreen immediately so player never sees it
-                                f.Position = UDim2.new(50, 0, f.Position.Y.Scale, f.Position.Y.Offset)
+    -- Fast execution mode: frames remain on-screen with valid absolute coordinates
+    -- so VirtualInputManager and VirtualUser clicks register accurately.
+end
+
+-- ── Locate Menu Button with Cursor ───────────────────────────────────────────
+local function findMenuButton()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+
+    -- 1. Search by location in bottom-right corner (YBA golden menu button at bottom right)
+    local bestBtn = nil
+    local maxScore = -1
+    local hud = PlayerGui:FindFirstChild("HUD")
+    local searchRoots = { hud, PlayerGui }
+
+    for _, root in ipairs(searchRoots) do
+        if root then
+            for _, v in ipairs(root:GetDescendants()) do
+                if v:IsA("GuiButton") and v.Visible then
+                    local sg = v:FindFirstAncestorOfClass("ScreenGui")
+                    local sgName = sg and sg.Name:lower() or ""
+                    if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                        local pos = v.AbsolutePosition
+                        local sz = v.AbsoluteSize
+                        if pos.X > vp.X * 0.75 and pos.Y > vp.Y * 0.75 and sz.X >= 18 and sz.Y >= 18 and sz.X <= 180 and sz.Y <= 180 then
+                            local score = pos.X + pos.Y
+                            if score > maxScore then
+                                maxScore = score
+                                bestBtn = v
                             end
                         end
                     end
                 end
             end
+            if bestBtn then return bestBtn end
         end
-    else
-        for _, entry in ipairs(hiddenFrames) do
-            pcall(function()
-                entry.frame.Position = entry.origPos
-                entry.frame.Visible = entry.origVis
-            end)
-        end
-        hiddenFrames = {}
     end
-end
 
--- ── Locate Menu Button with Cursor ───────────────────────────────────────────
-local function findMenuButton()
-    -- 1. By name / text
+    -- 2. By name / text
     for _, v in ipairs(PlayerGui:GetDescendants()) do
         if v:IsA("GuiButton") and v.Visible then
             local n = v.Name:lower()
@@ -389,27 +396,7 @@ local function findMenuButton()
         end
     end
 
-    -- 2. By position in bottom-right corner (YBA standard HUD menu location)
-    local cam = workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
-    local bestBtn = nil
-    local maxScore = -1
-
-    for _, v in ipairs(PlayerGui:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local pos = v.AbsolutePosition
-            local sz = v.AbsoluteSize
-            if pos.X > vp.X * 0.60 and pos.Y > vp.Y * 0.60 and sz.X >= 18 and sz.Y >= 18 and sz.X <= 250 and sz.Y <= 250 then
-                local score = pos.X + pos.Y
-                if score > maxScore then
-                    maxScore = score
-                    bestBtn = v
-                end
-            end
-        end
-    end
-
-    return bestBtn
+    return nil
 end
 
 -- ── Smart Item Equipper (Hotbar, Backpack, or Background Inventory) ───────────
@@ -417,61 +404,105 @@ local function smartEquipItem(itemName)
     local char = LocalPlayer.Character
     if not char then return nil end
     local hum = char:FindFirstChildOfClass("Humanoid")
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    local vim = game:GetService("VirtualInputManager")
 
     -- 1. Check if tool is ALREADY in hand
     local inHand = char:FindFirstChildOfClass("Tool")
-    if inHand and itemMatches(inHand.Name, itemName) then
+    if inHand and itemMatches(inHand.Name, itemName) and not inHand.Name:lower():find("использован") and not inHand.Name:lower():find("used") then
         return inHand
     end
 
-    -- 2. Check Backpack
-    local bp = LocalPlayer:FindFirstChild("Backpack")
+    -- 2. Direct parent to Character (Universal Roblox tool equip from Backpack)
     if bp then
         for _, tool in ipairs(bp:GetChildren()) do
-            if tool:IsA("Tool") and itemMatches(tool.Name, itemName) then
-                if hum then hum:EquipTool(tool) end
+            if tool:IsA("Tool") and itemMatches(tool.Name, itemName) and not tool.Name:lower():find("использован") and not tool.Name:lower():find("used") then
+                pcall(function()
+                    if hum then
+                        hum:EquipTool(tool)
+                    else
+                        tool.Parent = char
+                    end
+                end)
                 task.wait(0.2)
-                return tool
+                local eq = char:FindFirstChildOfClass("Tool")
+                if eq and itemMatches(eq.Name, itemName) then return eq end
             end
         end
     end
 
-    -- 3. Check Hotbar in HUD
-    local hud = PlayerGui:FindFirstChild("HUD")
-    local searchRoot = hud or PlayerGui
-    for _, v in ipairs(searchRoot:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local sg = v:FindFirstAncestorOfClass("ScreenGui")
-            local sgName = sg and sg.Name:lower() or ""
-            if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
-                local txt = v.Text or ""
-                local name = v.Name or ""
-                local childMatch = false
-                for _, lbl in ipairs(v:GetDescendants()) do
-                    if lbl:IsA("TextLabel") and itemMatches(lbl.Text, itemName) then
-                        childMatch = true
-                        break
-                    end
-                end
+    -- 3. Press Hotbar Keys directly (Slot 4, 5 for Rokakaka; Slot 7, 8, 9, 0 for Arrow)
+    local isRoka = itemMatches("Rokakaka", itemName) or itemName:lower():find("roka") or itemName:lower():find("рока")
+    local numKeys = {
+        [1] = Enum.KeyCode.One,   [2] = Enum.KeyCode.Two,   [3] = Enum.KeyCode.Three,
+        [4] = Enum.KeyCode.Four,  [5] = Enum.KeyCode.Five,  [6] = Enum.KeyCode.Six,
+        [7] = Enum.KeyCode.Seven, [8] = Enum.KeyCode.Eight, [9] = Enum.KeyCode.Nine,
+        [0] = Enum.KeyCode.Zero,
+    }
 
-                if itemMatches(txt, itemName) or itemMatches(name, itemName) or childMatch then
-                    clickWithCursor(v)
-                    task.wait(0.2)
-                    local eq = char:FindFirstChildOfClass("Tool")
-                    if eq and itemMatches(eq.Name, itemName) then
-                        return eq
-                    end
+    local targetSlots = isRoka and { 4, 5, 1, 2, 3, 6 } or { 7, 8, 9, 0, 1, 2, 3 }
+    if vim then
+        for _, s in ipairs(targetSlots) do
+            local kc = numKeys[s]
+            if kc then
+                pcall(function()
+                    vim:SendKeyEvent(true, kc, false, game)
+                    task.wait(0.04)
+                    vim:SendKeyEvent(false, kc, false, game)
+                end)
+                task.wait(0.18)
+                local eq = char:FindFirstChildOfClass("Tool")
+                if eq and itemMatches(eq.Name, itemName) and not eq.Name:lower():find("использован") and not eq.Name:lower():find("used") then
+                    return eq
                 end
             end
         end
     end
 
-    -- 4. Check Inventory Menu in background mode (if item is stored in inventory)
+    -- 4. Check Hotbar buttons in CoreGui / PlayerGui HUD
+    pcall(function()
+        local coreGui = game:GetService("CoreGui")
+        local robloxGui = coreGui:FindFirstChild("RobloxGui")
+        local bpGui = robloxGui and robloxGui:FindFirstChild("Backpack")
+        local roots = { bpGui, PlayerGui:FindFirstChild("HUD"), PlayerGui }
+        for _, root in ipairs(roots) do
+            if root then
+                for _, v in ipairs(root:GetDescendants()) do
+                    if v:IsA("GuiButton") and v.Visible then
+                        local sg = v:FindFirstAncestorOfClass("ScreenGui")
+                        local sgName = sg and sg.Name:lower() or ""
+                        if not sgName:find("obsidian") and not sgName:find("library") and not sgName:find("scythe") then
+                            local txt = v.Text or ""
+                            local name = v.Name or ""
+                            local childMatch = false
+                            for _, lbl in ipairs(v:GetDescendants()) do
+                                if lbl:IsA("TextLabel") and itemMatches(lbl.Text, itemName) and not lbl.Text:lower():find("использован") and not lbl.Text:lower():find("used") then
+                                    childMatch = true
+                                    break
+                                end
+                            end
+
+                            if (itemMatches(txt, itemName) or itemMatches(name, itemName) or childMatch)
+                               and not txt:lower():find("использован") and not name:lower():find("использован") then
+                                clickWithCursor(v)
+                                task.wait(0.2)
+                                local eq = char:FindFirstChildOfClass("Tool")
+                                if eq and itemMatches(eq.Name, itemName) then
+                                    return eq
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    -- 5. Check Inventory Menu
     local menuBtn = findMenuButton()
     if menuBtn then
         clickWithCursor(menuBtn)
-        task.wait(0.1)
-        setMenuBackgroundMode(true)
+        task.wait(0.15)
 
         local invBtn = findDescendantContaining(PlayerGui, "Inventory")
             or findDescendantContaining(PlayerGui, "Инвентарь")
@@ -481,7 +512,8 @@ local function smartEquipItem(itemName)
 
             for _, btn in ipairs(PlayerGui:GetDescendants()) do
                 if btn:IsA("GuiButton") and btn.Visible then
-                    if itemMatches(btn.Text, itemName) or itemMatches(btn.Name, itemName) then
+                    if (itemMatches(btn.Text, itemName) or itemMatches(btn.Name, itemName))
+                       and not (btn.Text or ""):lower():find("использован") then
                         clickWithCursor(btn)
                         task.wait(0.2)
                         break
@@ -494,24 +526,16 @@ local function smartEquipItem(itemName)
             or findDescendantContaining(PlayerGui, "Закрыть")
         if closeBtn and closeBtn:IsA("GuiButton") then
             clickWithCursor(closeBtn)
+        else
+            clickWithCursor(menuBtn)
         end
-        setMenuBackgroundMode(false)
         task.wait(0.15)
     end
 
-    -- Verify if now in hand or backpack
+    -- Final verify
     local eqNow = char:FindFirstChildOfClass("Tool")
     if eqNow and itemMatches(eqNow.Name, itemName) then
         return eqNow
-    end
-    if bp then
-        for _, tool in ipairs(bp:GetChildren()) do
-            if tool:IsA("Tool") and itemMatches(tool.Name, itemName) then
-                if hum then hum:EquipTool(tool) end
-                task.wait(0.2)
-                return tool
-            end
-        end
     end
 
     return nil
@@ -571,7 +595,7 @@ local function closeSkillTree()
         or findDescendantContaining(PlayerGui, "Назад")
     if backBtn and backBtn:IsA("GuiButton") then
         clickWithCursor(backBtn)
-        task.wait(0.2)
+        task.wait(0.15)
     end
 
     local closeBtn = findDescendantContaining(PlayerGui, "Close")
@@ -580,9 +604,13 @@ local function closeSkillTree()
     if closeBtn and closeBtn:IsA("GuiButton") then
         clickWithCursor(closeBtn)
         task.wait(0.15)
+    else
+        local menuBtn = findMenuButton()
+        if menuBtn then
+            clickWithCursor(menuBtn)
+            task.wait(0.15)
+        end
     end
-
-    setMenuBackgroundMode(false)
 end
 
 local function learnSkillNode(node)
@@ -860,22 +888,30 @@ local function confirmDialogue()
     local startTime = tick()
     while tick() - startTime < 3.5 do
         for _, v in ipairs(PlayerGui:GetDescendants()) do
-            if v:IsA("GuiButton") and v.Visible then
-                local txt = (v.Text or ""):lower():gsub("%s+", "")
+            if (v:IsA("GuiButton") or v:IsA("TextButton") or v:IsA("ImageButton")) and v.Visible then
+                local fullText = (v:IsA("TextButton") and v.Text or ""):lower()
+                for _, child in ipairs(v:GetDescendants()) do
+                    if child:IsA("TextLabel") then
+                        fullText = fullText .. " " .. child.Text:lower()
+                    end
+                end
+                fullText = fullText:gsub("%s+", "")
                 local name = v.Name:lower():gsub("%s+", "")
 
-                if txt == "yes" or txt == "да"
-                   or txt == "eat" or txt == "съесть" or txt == "покушать"
-                   or txt == "use" or txt == "использовать" or txt == "применить"
-                   or txt:find("confirm") or txt:find("подтверд")
-                   or name == "option1" or name == "choice1" or name == "yes" then
+                if fullText == "yes" or fullText == "да"
+                   or fullText:find("yes") or fullText:find("да")
+                   or fullText:find("eat") or fullText:find("съесть") or fullText:find("покушать")
+                   or fullText:find("use") or fullText:find("использ") or fullText:find("применить")
+                   or fullText:find("confirm") or fullText:find("подтверд")
+                   or name == "option1" or name == "choice1" or name == "yes" or name == "choice"
+                   or name:find("confirm") then
                     clickWithCursor(v)
-                    task.wait(0.3)
+                    task.wait(0.25)
                     return true
                 end
             end
         end
-        task.wait(0.1)
+        task.wait(0.08)
     end
     return false
 end
@@ -883,10 +919,13 @@ end
 -- ── Use Item with Cursor (Equip -> Click Screen -> Confirm Dialogue) ──────────
 local function useItemWithCursor(itemName)
     local tool = smartEquipItem(itemName)
-    if not tool then
-        return false
-    end
     task.wait(0.2)
+
+    local char = LocalPlayer.Character
+    local inHand = tool or (char and char:FindFirstChildOfClass("Tool"))
+    if inHand then
+        pcall(function() inHand:Activate() end)
+    end
 
     -- Click screen with mouse cursor to trigger item dialogue
     clickScreenWithCursor()
@@ -897,7 +936,7 @@ local function useItemWithCursor(itemName)
     if not ok then
         -- Retry screen click once if dialogue hasn't opened yet
         clickScreenWithCursor()
-        task.wait(0.2)
+        task.wait(0.3)
         ok = confirmDialogue()
     end
     return ok
@@ -979,21 +1018,22 @@ local function runLoop()
     while State.Running do
         waitAlive()
 
-        -- Check if target stand is already equipped right at the start
-        local initialStand = detectCurrentStand()
-        State.ActiveStand = initialStand
-        if initialStand ~= "None" and initialStand ~= "Standless" and initialStand ~= "" then
-            if initialStand:lower() == Config.TargetStand:lower() then
+        -- 1. Check current stand right at start of iteration
+        local currentStand = detectCurrentStand()
+        State.ActiveStand  = currentStand
+
+        if currentStand ~= "None" and currentStand ~= "Standless" and currentStand ~= "" then
+            if currentStand:lower():find(Config.TargetStand:lower(), 1, true) then
                 State.CurrentPhase = "FINISHED"
                 State.Running      = false
 
                 pcall(function()
-                    Library:Notify("Целевой стенд уже получен: " .. initialStand, 10)
+                    Library:Notify("Целевой стенд уже получен: " .. currentStand, 10)
                 end)
                 pcall(function()
                     game:GetService("StarterGui"):SetCore("SendNotification", {
                         Title    = "Scythe | YBA",
-                        Text     = "Целевой стенд уже получен: " .. initialStand,
+                        Text     = "Целевой стенд уже получен: " .. currentStand,
                         Duration = 10,
                     })
                 end)
@@ -1006,49 +1046,32 @@ local function runLoop()
             end
         end
 
-        -- Check inventory counts
-        State.ItemCount = countInBackpack(Config.ItemType)
-        State.RokaCount = countInBackpack("Rokakaka")
-
-        local needItem = State.ItemCount == 0
-        local needRoka = State.RokaCount  == 0
-
-        if needItem or needRoka then
-            scavengeMap(needItem, needRoka)
-            State.ItemCount = countInBackpack(Config.ItemType)
-            State.RokaCount = countInBackpack("Rokakaka")
-            needItem = State.ItemCount == 0
-            needRoka = State.RokaCount  == 0
-
-            if needItem or needRoka then
-                buyFromShop(needItem, needRoka)
-                State.ItemCount = countInBackpack(Config.ItemType)
-                State.RokaCount = countInBackpack("Rokakaka")
-                if State.ItemCount == 0 or State.RokaCount == 0 then
-                    pcall(function()
-                        Library:Notify("Недостаточно предметов! Стрелы: " .. State.ItemCount .. " | Рока: " .. State.RokaCount, 3)
-                    end)
-                    task.wait(2)
-                    continue
-                end
-            end
-        end
-
         -- ── STEP 1 · EAT ROKAKAKA WITH CURSOR ───────────────────────────────
-        -- "как только я включаю функцию что бы он брал рокаку в руки использывал ее курсором"
-        State.CurrentPhase = "RESETTING"
-        local rokaOk = useItemWithCursor("Rokakaka")
-        if rokaOk then
-            task.wait(2.5)
-            waitAlive()
-            task.wait(0.3)
-        else
+        -- If player has an unwanted stand, eat Rokakaka to reset.
+        -- If player is Standless, attempt Rokakaka once but NEVER freeze or block!
+        if currentStand ~= "None" and currentStand ~= "Standless" and currentStand ~= "" then
+            State.CurrentPhase = "RESETTING"
             pcall(function()
-                Library:Notify("Не удалось использовать Рокакаку (проверьте наличие)", 3)
+                Library:Notify("Сброс стенда (" .. currentStand .. ") через Рокакаку...", 3)
             end)
-            task.wait(1)
-            continue
+            local rokaOk = useItemWithCursor("Rokakaka")
+            if rokaOk then
+                task.wait(2.5)
+                waitAlive()
+                task.wait(0.3)
+            else
+                task.wait(0.5)
+            end
+        else
+            -- Player is Standless: try to use Rokakaka once just in case to reset skill tree, without blocking
+            State.CurrentPhase = "RESETTING"
+            pcall(function()
+                useItemWithCursor("Rokakaka")
+            end)
+            task.wait(0.3)
         end
+
+        if not State.Running then break end
 
         -- ── STEP 2 · BACKGROUND WORTHINESS UPGRADE ──────────────────────────
         -- "делал фоновую прокачку ... что бы я не видел меню тд тп"
@@ -1057,20 +1080,27 @@ local function runLoop()
         task.wait(0.3)
         waitAlive()
 
+        if not State.Running then break end
+
         -- ── STEP 3 · USE ROLLING ITEM WITH CURSOR ───────────────────────────
         -- "брал стрелу или то что выбрано в rolling item и использывал ее курсором"
         State.CurrentPhase = "ROLLING"
+        pcall(function()
+            Library:Notify("Использование " .. Config.ItemType .. "...", 3)
+        end)
         local itemOk = useItemWithCursor(Config.ItemType)
         if itemOk then
-            task.wait(2.0)
+            task.wait(2.5)
             waitAlive()
         else
-            pcall(function()
-                Library:Notify("Не удалось использовать " .. Config.ItemType, 3)
-            end)
-            task.wait(1)
-            continue
+            -- Retry once if dialogue did not confirm immediately
+            task.wait(0.5)
+            useItemWithCursor(Config.ItemType)
+            task.wait(2.0)
+            waitAlive()
         end
+
+        if not State.Running then break end
 
         -- ── STEP 4 · STAND DETECTION & TARGET CHECK ─────────────────────────
         -- "и так пока не выбьет определенный стенд который выбран в target stand"
@@ -1080,28 +1110,25 @@ local function runLoop()
         repeat
             task.wait(0.4)
             newStand = detectCurrentStand()
-        until (newStand ~= "None" and newStand ~= "Standless") or tick() - detectStart > 6
+        until (newStand ~= "None" and newStand ~= "Standless") or tick() - detectStart > 7
 
         State.ActiveStand = newStand
 
-        if newStand ~= "None" and newStand:lower():find(Config.TargetStand:lower(), 1, true) then
+        if newStand ~= "None" and newStand ~= "Standless" and newStand:lower():find(Config.TargetStand:lower(), 1, true) then
             State.CurrentPhase = "FINISHED"
             State.Running      = false
 
-            -- Obsidian notification
             pcall(function()
-                Library:Notify("Все есть! Выбит: " .. newStand, 10)
+                Library:Notify("Все есть! Выбит целевой стенд: " .. newStand, 10)
             end)
-            -- Fallback Roblox notification
             pcall(function()
                 game:GetService("StarterGui"):SetCore("SendNotification", {
                     Title    = "Scythe | YBA",
-                    Text     = "Все есть! Выбит: " .. newStand,
+                    Text     = "Все есть! Выбит целевой стенд: " .. newStand,
                     Duration = 10,
                 })
             end)
 
-            -- Sync toggle UI back to OFF
             pcall(function()
                 if Toggles and Toggles.AutoRollToggle then
                     Toggles.AutoRollToggle:SetValue(false)
